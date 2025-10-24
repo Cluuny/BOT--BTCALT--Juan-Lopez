@@ -1,0 +1,16 @@
+from config.settings import settings
+from persistence.db_connection import db
+from persistence.test_db import run_all_db_tests
+from persistence.test_repos import run_repository_tests
+
+settings = settings
+
+if __name__ == "__main__":
+    print("🧪 Iniciando prueba de conexión a la base de datos...")
+    print(f"⚙️  Modo de operación: {settings.MODE}")
+    print(f"🔗 URL de REST: {settings.REST_URL}")
+    print(f"🔗 URL de WebSocket: {settings.WS_URL}")
+    print(f"🗄️  URL de la Base de Datos: {settings.DATABASE_URL}")
+    run_all_db_tests()
+    run_repository_tests()
+    print("✅ Todas las pruebas completadas.")

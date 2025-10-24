@@ -1,0 +1,90 @@
+# Entornos / variables de entorno
+.env
+.env.* 
+.binance-bot-venv/
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+wheelhouse/
+*.spec
+
+# Packaging / installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Test / coverage / caches
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.cache
+coverage.xml
+nosetests.xml
+
+# PyInstaller
+*.manifest
+
+# Django / development databases & logs
+*.log
+logs/
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Jupyter / IPython
+.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# IDEs / editors
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# Secrets / keys
+*.pem
+*.key
+*.crt
+credentials.yml
+
+# Misc
+*.bak
+*.swp
+*~
+*.tmp
+
+# Node (por si hay integraciones)
+node_modules/
+
+# Docker overrides / local compose files
+docker-compose.override.yml
+
+# Misc local files
+*.db
+*.sqlite3
+*.sql
