@@ -26,6 +26,7 @@ class Settings:
     MODE: str = os.getenv("MODE", "TESTNET").upper()
     API_KEY: str = os.getenv("API_KEY")
     API_SECRET: str = os.getenv("API_SECRET")
+    WS_URL: str = "wss://stream.binance.com:9443/ws"
 
     if not API_KEY or not API_SECRET:
         raise ValueError("⚠️ API_KEY y API_SECRET deben estar en el .env")
@@ -33,10 +34,8 @@ class Settings:
     # Endpoints según el modo
     if MODE == "TESTNET":
         REST_URL = "https://testnet.binance.vision/api"
-        WS_URL = "wss://testnet.binance.vision/ws"
     else:
         REST_URL = "https://api.binance.com"
-        WS_URL = "wss://stream.binance.com:9443/ws"
 
     # Configuración Base de Datos
     DB_HOST = os.getenv("DB_HOST", "localhost")

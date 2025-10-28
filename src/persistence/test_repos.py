@@ -21,7 +21,7 @@ def run_repository_tests():
         def setUpClass(cls):
             cls.session: Session = db.get_session()
             cls.session.begin()
-            print("\n🔍 Iniciando pruebas de repositories...\n")
+            print("\n🔍 Iniciando pruebas de repositories...")
 
         @classmethod
         def tearDownClass(cls):
