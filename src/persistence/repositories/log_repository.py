@@ -8,14 +8,29 @@ class LogRepository:
         self.session = session
 
     def add_log(
-        self, bot_id: int | None, level: str, message: str, context: dict | None = None
-    ):
+        self,
+        bot_id: int | None,
+        level: str,
+        message: str,
+        context: dict | None = None,
+        run_id: int | None = None,
+        component: str | None = None,
+        correlation_id: str | None = None,
+        extra: dict | None = None,
+        stacktrace: str | None = None,
+        timestamp: datetime | None = None,
+    ) -> Log:
         log = Log(
             bot_id=bot_id,
+            run_id=run_id,
             level=level,
+            component=component,
+            correlation_id=correlation_id,
             message=message,
             context=context,
-            timestamp=datetime.utcnow(),
+            extra=extra,
+            stacktrace=stacktrace,
+            timestamp=timestamp or datetime.utcnow(),
         )
         self.session.add(log)
         self.session.commit()

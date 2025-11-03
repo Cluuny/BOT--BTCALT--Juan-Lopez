@@ -88,3 +88,6 @@ docker-compose.override.yml
 *.db
 *.sqlite3
 *.sql
+
+# Other files
+src/APITest.py

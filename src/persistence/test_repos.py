@@ -13,6 +13,10 @@ from persistence.repositories.trade_repository import TradeRepository
 from persistence.repositories.performance_stats_repository import (
     PerformanceStatsRepository,
 )
+from utils.logger import Logger
+
+
+logger = Logger.get_logger(__name__)
 
 
 def run_repository_tests():
@@ -21,13 +25,13 @@ def run_repository_tests():
         def setUpClass(cls):
             cls.session: Session = db.get_session()
             cls.session.begin()
-            print("\n🔍 Iniciando pruebas de repositories...")
+            logger.info("\n🔍 Iniciando pruebas de repositories...")
 
         @classmethod
         def tearDownClass(cls):
             cls.session.rollback()
             cls.session.close()
-            print("\n✅ Pruebas de repositories finalizadas.\n")
+            logger.info("\n✅ Pruebas de repositories finalizadas.\n")
 
         def test_repositories(self):
             try:
@@ -39,12 +43,12 @@ def run_repository_tests():
                 # Account
                 acc_repo = AccountRepository(self.session)
                 acc_repo.create_or_update("BINANCE", "acc_test_1", 1000, 800, 200)
-                print("✅ AccountRepository OK")
+                logger.info("✅ AccountRepository OK")
 
                 # Log
                 log_repo = LogRepository(self.session)
                 log_repo.add_log(bot_id=bot_id, level="INFO", message="Test log")
-                print("✅ LogRepository OK")
+                logger.info("✅ LogRepository OK")
 
                 # Order
                 order_repo = OrderRepository(self.session)
@@ -58,7 +62,7 @@ def run_repository_tests():
                     price=68000.5,
                     quantity=0.01,
                 )
-                print("✅ OrderRepository OK")
+                logger.info("✅ OrderRepository OK")
 
                 # Signal
                 sig_repo = SignalRepository(self.session)
@@ -69,7 +73,7 @@ def run_repository_tests():
                     direction="BUY",
                     price=68000.5,
                 )
-                print("✅ SignalRepository OK")
+                logger.info("✅ SignalRepository OK")
 
                 # Trade
                 trade_repo = TradeRepository(self.session)
@@ -79,7 +83,7 @@ def run_repository_tests():
                     entry_price=68000,
                     position_size=0.01,
                 )
-                print("✅ TradeRepository OK")
+                logger.info("✅ TradeRepository OK")
 
                 # Performance
                 perf_repo = PerformanceStatsRepository(self.session)
@@ -91,7 +95,7 @@ def run_repository_tests():
                     profit_factor=1.8,
                     total_trades=10,
                 )
-                print("✅ PerformanceStatsRepository OK")
+                logger.info("✅ PerformanceStatsRepository OK")
 
             except Exception as e:
                 self.fail(f"❌ Error durante pruebas de repositories: {e}")

@@ -1,11 +1,8 @@
 import asyncio
-import logging
+from utils.logger import Logger
 from binance import AsyncClient, BinanceSocketManager
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+logger = Logger.get_logger(__name__)
 
 
 class RealTimeDataCollector:
@@ -39,11 +36,11 @@ class RealTimeDataCollector:
                 if not self.client:
                     self.client = await AsyncClient.create()
                     self.bsm = BinanceSocketManager(self.client, user_timeout=60)
-                    logging.info("✅ Conectado a Binance WebSocket")
+                    logger.info("✅ Conectado a Binance WebSocket")
 
                 if not socket:
                     streams = [f"{s}@kline_{self.interval}" for s in self.symbols]
-                    logging.info(f"🔗 Iniciando stream con: {streams}")
+                    logger.info(f"🔗 Iniciando stream con: {streams}")
                     socket = self.bsm.multiplex_socket(streams)
 
                 # Conexión abierta por while
@@ -53,16 +50,16 @@ class RealTimeDataCollector:
                             msg = await s.recv()
                             await self._process_message(msg)
                         except asyncio.TimeoutError:
-                            logging.warning(
+                            logger.warning(
                                 "⌛ Timeout, esperando siguiente mensaje..."
                             )
                             continue
                         except Exception as e:
-                            logging.error(f"⚠️ Error recibiendo datos: {e}")
+                            logger.error(f"⚠️ Error recibiendo datos: {e}")
                             break
 
             except Exception as e:
-                logging.error(f"⚠️ Error general del WebSocket: {e}")
+                logger.error(f"⚠️ Error general del WebSocket: {e}")
                 await asyncio.sleep(self.reconnect_delay)
 
                 # Cerrar y reiniciar conexión completa
@@ -71,7 +68,7 @@ class RealTimeDataCollector:
                     self.client = None
                     self.bsm = None
                     socket = None
-                    logging.info("🔌 Cliente Binance cerrado correctamente.")
+                    logger.info("🔌 Cliente Binance cerrado correctamente.")
 
     async def _process_message(self, msg):
         """Procesa cada mensaje kline y envía solo la última vela cerrada del símbolo."""
@@ -120,4 +117,4 @@ class RealTimeDataCollector:
         self.keep_running = False
         if self.client:
             await self.client.close_connection()
-        logging.info("🛑 Recolección de datos detenida.")
+        logger.info("🛑 Recolección de datos detenida.")

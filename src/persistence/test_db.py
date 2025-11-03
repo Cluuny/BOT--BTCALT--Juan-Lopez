@@ -1,7 +1,9 @@
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import text
 from persistence.db_connection import Database
+from utils.logger import Logger
 
+logger = Logger.get_logger(__name__)
 
 def run_all_db_tests():
     db = Database()
@@ -11,11 +13,11 @@ def run_all_db_tests():
         test_table_columns(db, "bot_configs", ["id", "name", "created_at"])
         test_insert_and_query(db)
         test_foreign_keys(db)
-        print("\n🎉 Todas las pruebas de base de datos completadas correctamente.")
+        logger.info("\n🎉 Todas las pruebas de base de datos completadas correctamente.")
     except SQLAlchemyError as e:
-        print(f"❌ Error SQLAlchemy: {e}")
+        logger.info(f"❌ Error SQLAlchemy: {e}")
     except Exception as e:
-        print(f"❌ Error general: {e}")
+        logger.info(f"❌ Error general: {e}")
 
 
 # ---- Tests individuales ----
@@ -23,7 +25,7 @@ def test_connection(db):
     session = db.get_session()
     session.execute(text("SELECT 1"))
     session.close()
-    print("✅ Conexión básica verificada.")
+    logger.info("✅ Conexión básica verificada.")
 
 
 def test_tables_exist(db):
@@ -34,7 +36,7 @@ def test_tables_exist(db):
     )
     tables = [row[0] for row in result]
     session.close()
-    print(f"🗄️ Tablas encontradas: {tables}")
+    logger.info(f"🗄️ Tablas encontradas: {tables}")
 
 
 def test_table_columns(db, table_name, expected_columns):
@@ -50,9 +52,9 @@ def test_table_columns(db, table_name, expected_columns):
     session.close()
     missing = set(expected_columns) - set(columns)
     if missing:
-        print(f"❌ '{table_name}' sin columnas esperadas: {missing}")
+        logger.info(f"❌ '{table_name}' sin columnas esperadas: {missing}")
     else:
-        print(f"✅ '{table_name}' columnas verificadas.")
+        logger.info(f"✅ '{table_name}' columnas verificadas.")
 
 
 def test_insert_and_query(db):
@@ -119,7 +121,7 @@ def test_insert_and_query(db):
         )
         value = result.scalar()
         assert value == "test_entry"
-        print("✅ Inserción/lectura exitosas (rollback aplicado).")
+        logger.info("✅ Inserción/lectura exitosas (rollback aplicado).")
     finally:
         session.rollback()
         session.close()
@@ -144,8 +146,8 @@ def test_foreign_keys(db):
     fks = result.fetchall()
     session.close()
     if fks:
-        print("🔗 Claves foráneas detectadas:")
+        logger.info("🔗 Claves foráneas detectadas:")
         for fk in fks:
-            print(f" - {fk.table_name}.{fk.column_name} → {fk.foreign_table_name}")
+            logger.info(f" - {fk.table_name}.{fk.column_name} → {fk.foreign_table_name}")
     else:
-        print("⚠️ No hay claves foráneas definidas.")
+        logger.info("⚠️ No hay claves foráneas definidas.")

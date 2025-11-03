@@ -1,13 +1,12 @@
 # rest_data_provider.py
 
-import logging
+import time
+from utils.logger import Logger
 from typing import List, Optional, Dict, Any
-from binance import Client
+from binance import Client, BinanceAPIException
 import config.settings as settings
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logger = Logger.get_logger(__name__)
 
 
 class BinanceRESTClient:
@@ -16,12 +15,43 @@ class BinanceRESTClient:
     Maneja autenticación y operaciones de trading/consulta.
     """
 
-    def __init__(self):
-        logging.info("🔗 Conectando al cliente REST de Binance...")
+    def __init__(self, testnet: bool = True):
+        logger.info("🔗 Conectando al cliente REST de Binance...")
         self.client = Client(
-            settings.settings.API_KEY, settings.settings.API_SECRET, testnet=True
+            settings.settings.API_KEY, settings.settings.API_SECRET, testnet=testnet
         )
-        logging.info("✅ Cliente REST de Binance inicializado correctamente.")
+
+        self._sync_time_with_server()
+        self.client.ping()  # Prueba de conexión
+
+        logger.info("✅ Cliente REST de Binance inicializado correctamente.")
+
+    def _sync_time_with_server(self):
+        """Sincroniza el tiempo local con el del servidor Binance de forma robusta."""
+        try:
+            server_time = self.client.get_server_time()["serverTime"]
+            local_time = int(round(time.time() * 1000))
+            self.time_offset = server_time - local_time
+            self.client.TIME_OFFSET = self.time_offset  # Ajuste oficial
+
+            logger.info(f"🕒 Desfase inicial detectado: {self.time_offset} ms")
+
+            # --- Ajuste extra de seguridad: revalidar si el desfase supera 500 ms
+            if abs(self.time_offset) > 500:
+                logger.warning("⚠️ Desfase alto, intentando resync...")
+                time.sleep(0.5)
+                server_time = self.client.get_server_time()["serverTime"]
+                local_time = int(round(time.time() * 1000))
+                self.time_offset = server_time - local_time
+                self.client.TIME_OFFSET = self.time_offset
+                logger.info(f"✅ Resync aplicado: nuevo desfase {self.time_offset} ms")
+
+            logger.info("⏱️ Sincronización completada correctamente.")
+
+        except Exception as e:
+            logger.error(
+                f"⚠️ Error al sincronizar hora con el servidor de Binance: {e}"
+            )
 
     # ======================
     # 🔹 ENDPOINTS PÚBLICOS
@@ -29,15 +59,15 @@ class BinanceRESTClient:
 
     def get_server_time(self) -> Dict[str, Any]:
         """Obtiene la hora del servidor."""
-        return self.client.time()
+        return self.client.get_server_time()
 
     def get_exchange_info(self) -> Dict[str, Any]:
         """Obtiene información general del exchange."""
-        return self.client.exchange_info()
+        return self.client.get_exchange_info()
 
     def get_symbol_price(self, symbol: str) -> float:
         """Obtiene el precio actual de un símbolo."""
-        logging.info(f"🔍 Consultando precio de {symbol.upper()}...")
+        logger.info(f"🔍 Consultando precio de {symbol.upper()}...")
         data = self.client.get_symbol_ticker(symbol=symbol.upper())
         return float(data["price"])
 
@@ -83,6 +113,10 @@ class BinanceRESTClient:
         """Información general de la cuenta (balances, etc.)."""
         return self.client.get_account()
 
+    def get_USDT_balance(self) -> float:
+        """Obtiene el balance disponible de USDT."""
+        return self.client.get_asset_balance(asset="USDT")  # Actualiza balances
+
     def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
         """Consulta las órdenes abiertas (todas o de un símbolo)."""
         if symbol:
@@ -90,18 +124,16 @@ class BinanceRESTClient:
         return self.client.get_open_orders()
 
     def create_order(
-        self,
-        symbol: str,
-        side: str,
-        type_: str,
-        quantity: float,
-        price: Optional[float] = None,
-        time_in_force: str = "GTC",
+            self,
+            symbol: str,
+            side: str,
+            type_: str,
+            quantity: float,
+            price: Optional[float] = None,
+            time_in_force: str = "GTC",
     ) -> Dict[str, Any]:
         """
         Crea una orden (MARKET o LIMIT).
-        Ejemplo:
-            client.create_order("BTCUSDT", "BUY", "MARKET", 0.001)
         """
         params = {
             "symbol": symbol.upper(),
@@ -114,7 +146,17 @@ class BinanceRESTClient:
             params["price"] = price
             params["timeInForce"] = time_in_force
 
-        return self.client.new_order(**params)
+        try:
+            return self.client.create_order(**params)
+        except BinanceAPIException as e:
+            logger.error(f"❌ Error de API al crear orden: {e}")
+            # Log adicional para debugging
+            logger.error(f"📋 Parámetros de la orden: {params}")
+            return {}
+        except Exception as e:
+            logger.error(f"❌ Error inesperado al crear orden: {e}")
+            return {}
+
 
     def cancel_order(self, symbol: str, order_id: int) -> Dict[str, Any]:
         """Cancela una orden por ID."""
