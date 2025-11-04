@@ -91,3 +91,4 @@ docker-compose.override.yml
 
 # Other files
 src/APITest.py
+*.csv

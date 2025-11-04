@@ -3,6 +3,7 @@ from config.settings import settings
 from persistence.db_connection import db
 from persistence.test_db import run_all_db_tests
 from persistence.test_repos import run_repository_tests
+from strategies import BBANDS_RSI_MeanReversionStrategy
 from strategies.btc_rsi import BTC_RSI_Strategy
 from engine.trade_engine import TradeEngine
 from persistence.repositories.bot_config_repository import BotConfigRepository
@@ -37,7 +38,7 @@ async def main():
     print("-------------------------------------------------")
     symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
     # symbols = ["BTCUSDT"]
-    strategy = BTC_RSI_Strategy(signal_queue=signal_queue, bot_id=bot.id, run_db_id=run.id)
+    strategy = BBANDS_RSI_MeanReversionStrategy(signal_queue=signal_queue, bot_id=bot.id, run_db_id=run.id)
     trade_engine = TradeEngine(signal_queue=signal_queue, bot_id=bot.id, run_db_id=run.id)
 
     try:

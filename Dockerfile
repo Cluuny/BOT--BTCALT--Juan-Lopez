@@ -1,24 +1,22 @@
-FROM python:3.11-alpine
+FROM python:3.12-slim
 
 WORKDIR /src
 
-# Instalar dependencias del sistema
-RUN apk update && apk add --no-cache \
-  gcc \
-  musl-dev \
-  postgresql-dev \
-  python3-dev
+# Instalar dependencias del sistema CORREGIDO
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copiar solo los archivos de dependencias
-COPY requirements.txt ./
+# Copiar requirements de producción
+COPY requirements-prod.txt ./
 
 # Instalar dependencias de Python
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copiar solo el .env de producción
-COPY .env ./
+RUN pip install --no-cache-dir -r requirements-prod.txt
 
 # Copiar el código fuente
+COPY .env ./
 COPY src/ ./src/
 
 CMD ["python", "src/main.py"]
