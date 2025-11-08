@@ -70,15 +70,16 @@ async def main():
     # Asegurar tablas
     db.create_tables()
 
-    # Crear sesión y asegurar BotConfig
+    # Crear sesión y asegurar BotConfig -  Persistir en BD
     session = db.get_session()
     bot_repo = BotConfigRepository(session)
-    bot = bot_repo.create_if_not_exists(name="DefaultBot", exchange="BINANCE", mode="REAL")
+    bot = bot_repo.create_if_not_exists(name="Bot", exchange="BINANCE", mode="REAL")
 
     # Iniciar un BotRun
     run_repo = BotRunRepository(session)
     run = run_repo.start(bot_id=bot.id, mode=bot.mode, env="dev", run_id=None)
 
+    # Se crea la cola de señales
     signal_queue = asyncio.Queue()
 
     print("Iniciando prueba de conexión a la base de datos...")
@@ -95,7 +96,7 @@ async def main():
     # SELECCIÓN DE ESTRATEGIA
     print_strategy_options()
 
-    # Selección automática o manual
+    # Estrategia por defecto - Pruebas
     selected_strategy = "btc_daily"
 
     # Para selección manual por consola

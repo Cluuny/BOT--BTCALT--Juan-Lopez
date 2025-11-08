@@ -1,6 +1,7 @@
 # rest_data_provider.py
 
 import time
+import os
 from utils.logger import Logger
 from typing import List, Optional, Dict, Any
 from binance import Client, BinanceAPIException
@@ -17,12 +18,19 @@ class BinanceRESTClient:
 
     def __init__(self, testnet: bool = True):
         logger.info("🔗 Conectando al cliente REST de Binance...")
+        # Validar claves antes de instanciar el cliente (permite importar settings sin crash)
+        settings.settings.validate_api_keys()
+
         self.client = Client(
             settings.settings.API_KEY, settings.settings.API_SECRET, testnet=testnet
         )
 
         self._sync_time_with_server()
         self.client.ping()  # Prueba de conexión
+
+        # Rate limiting básico
+        self._min_interval = float(os.getenv("REST_MIN_INTERVAL_SECONDS", "0.1"))
+        self._last_request_time = 0.0
 
         logger.info("✅ Cliente REST de Binance inicializado correctamente.")
 
@@ -49,9 +57,40 @@ class BinanceRESTClient:
             logger.info("⏱️ Sincronización completada correctamente.")
 
         except Exception as e:
-            logger.error(
-                f"⚠️ Error al sincronizar hora con el servidor de Binance: {e}"
-            )
+            logger.error(f"⚠️ Error al sincronizar hora con el servidor de Binance: {e}")
+
+    def _throttle(self):
+        """Rate limiting simple: espera si la última llamada fue reciente."""
+        now = time.time()
+        elapsed = now - self._last_request_time
+        if elapsed < self._min_interval:
+            time.sleep(self._min_interval - elapsed)
+        self._last_request_time = time.time()
+
+    def _request_with_retries(self, func, max_attempts: int = 3, initial_backoff: float = 0.5, *args, **kwargs):
+        """Helper para reintentos con backoff exponencial y throttle."""
+        attempt = 0
+        backoff = initial_backoff
+        while attempt < max_attempts:
+            try:
+                self._throttle()
+                return func(*args, **kwargs)
+            except BinanceAPIException as e:
+                logger.warning(f"⚠️ BinanceAPIException (intento {attempt+1}): {e}")
+                attempt += 1
+                if attempt >= max_attempts:
+                    logger.error(f"❌ Máximos reintentos alcanzados: {e}")
+                    raise
+                time.sleep(backoff)
+                backoff *= 2
+            except Exception as e:
+                logger.warning(f"⚠️ Excepción en request (intento {attempt+1}): {e}")
+                attempt += 1
+                if attempt >= max_attempts:
+                    logger.error(f"❌ Máximos reintentos alcanzados (general): {e}")
+                    raise
+                time.sleep(backoff)
+                backoff *= 2
 
     # ======================
     # 🔹 ENDPOINTS PÚBLICOS
@@ -111,27 +150,31 @@ class BinanceRESTClient:
         """Información general de la cuenta (balances, etc.)."""
         return self.client.get_account()
 
-    def get_USDT_balance(self) -> float:
+    def get_usdt_balance(self) -> float:
         """Obtiene el balance disponible de USDT."""
-        return self.client.get_asset_balance(asset="USDT")  # Actualiza balances
+        balance_info = self.client.get_asset_balance(asset="USDT")
+        if balance_info:
+            return float(balance_info.get("free", 0.0))
+        return 0.0
 
     def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
         """Consulta las órdenes abiertas (todas o de un símbolo)."""
         if symbol:
-            return self.client.get_open_orders(symbol.upper())
+            return self.client.get_open_orders()
         return self.client.get_open_orders()
 
     def create_order(
-            self,
-            symbol: str,
-            side: str,
-            type_: str,
-            quantity: float,
-            price: Optional[float] = None,
-            time_in_force: str = "GTC",
-    ) -> Dict[str, Any]:
+        self,
+        symbol: str,
+        side: str,
+        type_: str,
+        quantity: float,
+        price: Optional[float] = None,
+        time_in_force: str = "GTC",
+    ) -> Optional[Dict[str, Any]]:
         """
-        Crea una orden (MARKET o LIMIT).
+        Crea una orden (MARKET o LIMIT) con reintentos y rate limiting.
+        Devuelve dict de respuesta o None en caso de error.
         """
         params = {
             "symbol": symbol.upper(),
@@ -145,17 +188,91 @@ class BinanceRESTClient:
             params["timeInForce"] = time_in_force
 
         try:
-            return self.client.create_order(**params)
+            resp = self._request_with_retries(lambda **p: self.client.create_order(**p), max_attempts=3, initial_backoff=0.5, **params)
+            return resp
         except BinanceAPIException as e:
             logger.error(f"❌ Error de API al crear orden: {e}")
-            # Log adicional para debugging
             logger.error(f"📋 Parámetros de la orden: {params}")
-            return {}
+            return None
         except Exception as e:
             logger.error(f"❌ Error inesperado al crear orden: {e}")
-            return {}
+            return None
 
+    def create_oco_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        take_profit_price: float,
+        stop_price: float,
+        stop_limit_price: Optional[float] = None,
+        stop_limit_time_in_force: str = "GTC",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Crea una OCO (Take-Profit Limit + Stop-Limit) si la API lo soporta.
+        Si python-binance no provee create_oco_order, hace fallback creando TP y SL por separado.
+        """
+        symbol = symbol.upper()
+        try:
+            sl_limit = stop_limit_price if stop_limit_price is not None else stop_price
+            params = {
+                "symbol": symbol,
+                "side": side.upper(),
+                "quantity": quantity,
+                "price": take_profit_price,
+                "stopPrice": stop_price,
+                "stopLimitPrice": sl_limit,
+                "stopLimitTimeInForce": stop_limit_time_in_force,
+            }
 
-    def cancel_order(self, symbol: str, order_id: int) -> Dict[str, Any]:
-        """Cancela una orden por ID."""
-        return self.client.cancel_order(symbol.upper(), orderId=order_id)
+            if hasattr(self.client, "create_oco_order"):
+                resp = self._request_with_retries(
+                    lambda: self.client.create_oco_order(**params),
+                    max_attempts=3,
+                    initial_backoff=0.5
+                )
+                return resp
+            else:
+                # Fallback: crear TP y SL por separado (LIMIT + STOP_LOSS_LIMIT)
+                logger.info("ℹ️ create_oco_order no disponible en client, creando TP y SL por separado")
+                tp_resp = self.create_order(symbol=symbol, side=side, type_="LIMIT", quantity=quantity, price=take_profit_price)
+
+                # Para STOP_LOSS_LIMIT necesitamos tanto stopPrice como price
+                sl_params = {
+                    "symbol": symbol,
+                    "side": side.upper(),
+                    "type": "STOP_LOSS_LIMIT",
+                    "quantity": quantity,
+                    "price": sl_limit,
+                    "stopPrice": stop_price,
+                    "timeInForce": stop_limit_time_in_force,
+                }
+                sl_resp = self._request_with_retries(
+                    lambda: self.client.create_order(**sl_params),
+                    max_attempts=3,
+                    initial_backoff=0.5
+                )
+
+                # devolver un diccionario agregado para indicar éxito parcial/total
+                result = {"tp": tp_resp, "sl": sl_resp}
+                return result
+        except BinanceAPIException as e:
+            logger.error(f"❌ Error creando OCO en Binance: {e}")
+            logger.error(f"📋 Parámetros OCO: {params}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Error inesperado creando OCO: {e}")
+            return None
+
+    def cancel_order(self, symbol: str, order_id: int) -> Optional[Dict[str, Any]]:
+        """Cancela una orden por ID con reintentos."""
+        try:
+            resp = self._request_with_retries(
+                lambda: self.client.cancel_order(symbol=symbol.upper(), orderId=order_id),
+                max_attempts=3,
+                initial_backoff=0.3
+            )
+            return resp
+        except Exception as e:
+            logger.error(f"❌ Error cancelando orden: {e}")
+            return None

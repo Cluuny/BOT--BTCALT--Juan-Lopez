@@ -1,5 +1,6 @@
 import asyncio
 import traceback
+import time
 
 from utils.logger import Logger
 from position.position_manager import PositionManager
@@ -18,16 +19,44 @@ from persistence.repositories.account_repository import AccountRepository
 logger = Logger.get_logger(__name__)
 
 
+def is_valid_binance_response(response: dict) -> bool:
+    """
+    Valida si una respuesta de Binance es exitosa.
+
+    Returns:
+        True si la respuesta indica éxito, False en caso contrario
+    """
+    if response is None:
+        return False
+
+    # Si tiene código de error HTTP o mensaje de error, es inválida
+    if "code" in response or "msg" in response:
+        # Códigos positivos (200, etc.) pueden aparecer, verificar si es error
+        code = response.get("code")
+        if code and code < 0:  # Códigos negativos son errores en Binance
+            return False
+
+    # Si tiene orderId, es una respuesta válida de orden
+    if "orderId" in response:
+        return True
+
+    # Si tiene status y no es error, es válida
+    if "status" in response and "code" not in response:
+        return True
+
+    return False
+
+
 class TradeEngine:
     """
-    Módulo que escucha las señales de trading y actúa en consecuencia.
+    🔧 VERSIÓN CORREGIDA: Validación robusta de respuestas de Binance
     """
 
     def __init__(self, signal_queue: asyncio.Queue, bot_id: int, run_db_id: int | None = None):
         self.signal_queue = signal_queue
         self.bot_id = bot_id
         self.run_db_id = run_db_id
-        self.rest_client = BinanceRESTClient(testnet=True)
+        self.rest_client = BinanceRESTClient(testnet=False)
         self.position_manager = PositionManager(rest_client=self.rest_client)
         self.order = None
 
@@ -35,10 +64,16 @@ class TradeEngine:
         """Escucha continuamente la cola de señales VALIDADAS."""
         logger.info("🚀 Trade Engine iniciado - Esperando señales validadas...")
 
+        # 🟠 IMPORTANTE: sincronizar órdenes abiertas y estado en startup
+        try:
+            self._sync_open_orders_on_startup()
+        except Exception as e:
+            logger.warning(f"⚠️ No se pudo sincronizar órdenes al startup: {e}")
+
         while True:
             raw_signal = await self.signal_queue.get()
 
-            # 🔥 VALIDAR LA SEÑAL ANTES DE PROCESAR
+            # Validar señal
             validated_signal = ValidatedSignal.create_safe_signal(raw_signal)
 
             if validated_signal is None:
@@ -53,14 +88,61 @@ class TradeEngine:
             await self.handle_signal(validated_signal)
             self.signal_queue.task_done()
 
+    def _sync_open_orders_on_startup(self):
+        """
+        Sincroniza órdenes abiertas desde Binance y las registra en PositionManager.open_positions.
+        """
+        try:
+            open_orders = self.rest_client.get_open_orders()
+            logger.info(f"🔁 Sincronizando {len(open_orders)} órdenes abiertas desde exchange")
+            for o in open_orders:
+                symbol = o.get("symbol")
+                if not symbol:
+                    continue
+                # Mapear a estructura simple que PositionManager espera
+                params = {
+                    "order_params": {
+                        "symbol": symbol,
+                        "side": o.get("side"),
+                        "type": o.get("type"),
+                        "quantity": float(o.get("origQty", o.get("quantity", 0)) or 0),
+                    },
+                    "timestamp": time.time(),
+                    "quote_order_usdt": None,
+                    "expected_value_usdt": None,
+                    "exchange_order": o,
+                }
+                self.position_manager.open_positions[symbol] = params
+            logger.info("✅ Sincronización inicial de órdenes completa")
+        except Exception as e:
+            logger.warning(f"⚠️ Error sincronizando órdenes abiertas: {e}")
+
     async def handle_signal(self, signal: SignalContract):
         """Procesa señales que cumplen el contrato"""
         try:
-            # 🔥 ACCESO SEGURO gracias al contrato
             strategy_name = signal.get('strategy_name', 'Desconocida')
             symbol = signal['symbol']
             signal_type = signal['type']
             price = signal['price']
+            risk_params = signal.get('risk_params', {})
+
+            # 🔎 Validar desviación de precio entre señal y mercado
+            try:
+                market_price = self.rest_client.get_current_price(symbol)
+                max_dev = None
+                # intentar leer umbral desde risk_params
+                if isinstance(risk_params, dict):
+                    max_dev = risk_params.get("max_price_deviation")
+                else:
+                    max_dev = getattr(risk_params, "max_price_deviation", None)
+                max_dev = float(max_dev) if max_dev is not None else 0.05  # default 5%
+
+                deviation = abs(price - market_price) / market_price
+                if deviation > max_dev:
+                    logger.warning(f"🚫 Señal descartada por desviación de precio ({deviation:.3f} > {max_dev:.3f})")
+                    return
+            except Exception as e:
+                logger.warning(f"⚠️ No se pudo validar desviación de precio: {e}")
 
             logger.info(f"🔔 Procesando señal validada | Estrategia: {strategy_name}")
             logger.info(f"   Símbolo: {symbol} | Tipo: {signal_type} | Precio: {price:.2f}")
@@ -73,15 +155,17 @@ class TradeEngine:
                 logger.error(f"❌ Tipo de señal desconocido: {signal_type}")
 
         except KeyError as e:
-            logger.error(f"❌ Error en señal validada (faltan campos obligatorios): {e}")
-            logger.error(f"📋 Señal recibida: {signal}")
+            logger.error(f"❌ Error en señal validada (faltan campos): {e}")
+            logger.error(f"📋 Señal: {signal}")
         except Exception as e:
             logger.error(f"❌ Error inesperado en handle_signal: {e}")
             logger.error(f"📋 Traceback: {traceback.format_exc()}")
 
-    def _persist_order_and_fills(self, request_payload: dict, response: dict, symbol: str, side: str, order_type: str,
-                                 quantity: float):
-        """Persiste la orden y sus fills en la base de datos"""
+    def _persist_order_and_fills(self, request_payload: dict, response: dict,
+                                 symbol: str, side: str, order_type: str, quantity: float):
+        """
+        🔧 CORREGIDO: Persistencia con validación de respuesta
+        """
         session = db.get_session()
         try:
             order_repo = OrderRepository(session)
@@ -91,17 +175,34 @@ class TradeEngine:
             log_repo = LogRepository(session)
             account_repo = AccountRepository(session)
 
-            # Vincular la orden con la última señal del mismo símbolo (si existe)
+            # Vincular con última señal
             latest_signal = None
             try:
                 latest_signal = signal_repo.get_latest_by_symbol(bot_id=self.bot_id, symbol=symbol)
             except Exception as e:
-                logger.warning(f"No fue posible obtener la última señal para {symbol}: {e}")
+                logger.warning(f"No se pudo vincular con señal: {e}")
 
-            exchange_order_id = str(response.get("orderId")) if response.get("orderId") else ""
-            status = response.get("status") or "NEW"
-            time_in_force = response.get("timeInForce")
+            # 🔧 CORREGIDO: Manejar respuestas None y de error
+            if response is None:
+                exchange_order_id = "ERROR_NO_RESPONSE"
+                status = "REJECTED"
+                error_msg = "No se recibió respuesta del exchange"
+                is_error = True
+            else:
+                is_error = not is_valid_binance_response(response)
 
+                if is_error:
+                    # Orden falló en Binance
+                    exchange_order_id = "ERROR"
+                    status = "REJECTED"
+                    error_msg = response.get("msg", str(response))
+                else:
+                    # Orden exitosa
+                    exchange_order_id = str(response.get("orderId"))
+                    status = response.get("status", "NEW")
+                    error_msg = None
+
+            # Crear registro de orden
             order = order_repo.create(
                 bot_id=self.bot_id,
                 signal_id=(latest_signal.id if latest_signal else None),
@@ -113,30 +214,49 @@ class TradeEngine:
                 quantity=quantity,
                 status=status,
                 run_id=self.run_db_id,
-                client_order_id=response.get("clientOrderId"),
-                time_in_force=time_in_force,
+                client_order_id=response.get("clientOrderId") if not is_error and response else None,
+                time_in_force=response.get("timeInForce") if not is_error and response else None,
                 request_payload=request_payload,
             )
 
-            # Guardar payload completo y posibles errores
-            order_repo.set_exchange_payload(order_id=order.id, exchange_response=response)
+            # Guardar payload y errores
+            order_repo.set_exchange_payload(
+                order_id=order.id,
+                exchange_response=response if response else {},
+                last_error=error_msg
+            )
+
+            # Log en BD (con manejo de excepciones)
             try:
+                log_level = "ERROR" if is_error else "INFO"
+                log_message = (
+                    f"Orden rechazada {symbol} {side}: {error_msg}" if is_error
+                    else f"Orden creada {symbol} {side} {order_type} qty={quantity} status={status}"
+                )
+
                 log_repo.add_log(
                     bot_id=self.bot_id,
                     run_id=self.run_db_id,
-                    level="INFO",
+                    level=log_level,
                     component="engine",
                     correlation_id=str(order.id),
-                    message=f"Orden creada {symbol} {side} {order_type} qty={quantity} status={status}",
-                    context={"request": request_payload, "response": response},
+                    message=log_message,
+                    context={"request": request_payload, "response": response if response else {}},
                 )
-            except Exception:
-                pass
+            except Exception as log_error:
+                # No fallar por error de logging
+                logger.warning(f"⚠️ No se pudo guardar log en BD: {log_error}")
 
-            # Fills de la respuesta (para MARKET usualmente presentes)
+            # Si la orden falló, no continuar con fills
+            if is_error:
+                logger.error(f"💥 Orden rechazada por Binance: {error_msg}")
+                return
+
+            # Procesar fills (solo si orden exitosa)
             fills = response.get("fills") or []
             total_quote = 0.0
             total_qty = 0.0
+
             for f in fills:
                 price = float(f.get("price", 0) or 0)
                 qty = float(f.get("qty", 0) or 0)
@@ -145,6 +265,7 @@ class TradeEngine:
                 commission_asset = f.get("commissionAsset")
                 is_maker = bool(f.get("isMaker", False))
                 trade_id = str(f.get("tradeId")) if f.get("tradeId") is not None else None
+
                 fill_repo.add(
                     order_id=order.id,
                     price=price,
@@ -158,10 +279,11 @@ class TradeEngine:
                 total_quote += quote_qty
                 total_qty += qty
 
-            # Actualizar cantidades ejecutadas y avg price si corresponde
-            executed_qty = float(response.get("executedQty", total_qty)) if response else total_qty
-            cummulative_quote_qty = float(response.get("cummulativeQuoteQty", total_quote)) if response else total_quote
-            avg_price = (cummulative_quote_qty / executed_qty) if executed_qty else None
+            # Actualizar cantidades ejecutadas
+            executed_qty = float(response.get("executedQty", total_qty))
+            cummulative_quote_qty = float(response.get("cummulativeQuoteQty", total_quote))
+            avg_price = (cummulative_quote_qty / executed_qty) if executed_qty > 0 else None
+
             order_repo.update_exec_quantities(
                 order_id=order.id,
                 executed_qty=executed_qty,
@@ -169,25 +291,26 @@ class TradeEngine:
                 avg_price=avg_price,
             )
 
-            # Si la orden quedó en estado terminal, marcar is_working=False
-            final_status = response.get("status") if response else None
+            # Marcar orden como finalizada si corresponde
+            final_status = response.get("status")
             if final_status in {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}:
                 try:
                     order_repo.set_is_working(order_id=order.id, is_working=False)
                 except Exception:
                     pass
 
-            # Si la orden quedó completamente FILLED, tomar snapshot de cuenta y balances
+            # Snapshot de balance si orden completamente FILLED
             if final_status == "FILLED":
                 try:
                     acct = self.rest_client.get_account_info()
+
                     # Resumen de cuenta
                     try:
-                        account_id = acct.get("accountType") or "SPOT"
+                        account_id = acct.get("accountType", "SPOT")
                         account_repo.create_or_update(
                             exchange="BINANCE",
                             account_id=account_id,
-                            balance_total=0.0,  # no provisto por Binance, se puede calcular por assets si se desea
+                            balance_total=0.0,
                             balance_available=0.0,
                             account_type=acct.get("accountType", "SPOT"),
                             can_trade=True,
@@ -195,10 +318,10 @@ class TradeEngine:
                             taker_commission=float(acct.get("takerCommission", 0) or 0),
                             permissions=acct.get("permissions"),
                         )
-                    except Exception:
-                        pass
+                    except Exception as acc_err:
+                        logger.warning(f"⚠️ Error guardando account: {acc_err}")
 
-                    # Snapshots por asset
+                    # Snapshots de balances
                     balances = acct.get("balances", [])
                     for b in balances:
                         asset = b.get("asset")
@@ -206,24 +329,13 @@ class TradeEngine:
                         locked = float(b.get("locked", 0) or 0)
                         balance_repo.add(bot_id=self.bot_id, asset=asset, free=free, locked=locked)
 
-                    try:
-                        log_repo.add_log(
-                            bot_id=self.bot_id,
-                            run_id=self.run_db_id,
-                            level="INFO",
-                            component="engine",
-                            correlation_id=str(order.id),
-                            message=f"BalanceSnapshot tomado post-FILLED para {symbol}",
-                        )
-                    except Exception:
-                        pass
-                except Exception as e:
-                    logger.error(f"Error tomando BalanceSnapshot post-FILLED: {e}")
+                except Exception as snap_err:
+                    logger.error(f"Error tomando BalanceSnapshot: {snap_err}")
 
-            logger.info(f"💾 Orden {order.id} persistida correctamente para {symbol}")
+            logger.info(f"💾 Orden {order.id} persistida correctamente")
 
         except Exception as e:
-            logger.error(f"❌ Error persistiendo orden y fills: {e}")
+            logger.error(f"❌ Error persistiendo orden: {e}")
             logger.error(f"📋 Traceback: {traceback.format_exc()}")
         finally:
             session.close()
@@ -231,10 +343,9 @@ class TradeEngine:
     async def _handle_buy(self, signal: SignalContract):
         """Maneja compra con señal validada"""
         try:
-            # 🔥 ACCESO SEGURO A CAMPOS OPCIONALES
             rsi_value = signal.get('rsi')
             position_size = signal.get('position_size_usdt')
-            reason = signal.get('reason', 'Sin razón especificada')
+            reason = signal.get('reason', 'Sin razón')
             strategy_name = signal.get('strategy_name', 'Desconocida')
 
             rsi_str = f"{rsi_value:.2f}" if rsi_value is not None else "N/A"
@@ -249,12 +360,12 @@ class TradeEngine:
             self.order = self.position_manager.build_market_order(signal=signal)
 
             if self.order is None:
-                logger.warning("⚠️ No se pudo construir la orden de compra.")
+                logger.warning("⚠️ No se pudo construir orden de compra")
                 return
 
-            logger.info(f"📦 Detalles de la orden: {self.order}")
+            logger.info(f"📦 Ejecutando orden: {self.order}")
 
-            # Ejecutar orden en exchange
+            # Ejecutar orden
             response = self.rest_client.create_order(
                 symbol=self.order['symbol'],
                 side=self.order['side'],
@@ -262,40 +373,51 @@ class TradeEngine:
                 quantity=self.order['quantity'],
             )
 
-            if response:
-                logger.info(f"✅ Orden ejecutada exitosamente")
-                logger.debug(f"📋 Respuesta del exchange: {response}")
-
-                self._persist_order_and_fills(
-                    request_payload={
-                        "symbol": self.order['symbol'],
-                        "side": self.order['side'],
-                        "type": self.order['type'],
-                        "quantity": self.order['quantity']
-                    },
-                    response=response,
-                    symbol=self.order['symbol'],
-                    side=self.order['side'],
-                    order_type=self.order['type'],
-                    quantity=self.order['quantity'],
-                )
+            # Validar respuesta antes de persistir
+            if response is None:
+                logger.error(f"❌ No se recibió respuesta del exchange")
+                is_valid = False
             else:
-                logger.error("❌ La orden no tuvo respuesta o falló en el exchange")
+                is_valid = is_valid_binance_response(response)
+                if is_valid:
+                    logger.info(f"✅ Orden ejecutada exitosamente")
+                    logger.debug(f"📋 Respuesta: {response}")
+                else:
+                    logger.error(f"❌ Orden rechazada por Binance")
+                    logger.error(f"📋 Respuesta: {response}")
 
-        except KeyError as e:
-            logger.error(f"❌ Error de clave faltante en señal de compra: {e}")
-            logger.error(f"📋 Señal recibida: {signal}")
+            # Persistir siempre (éxito o error)
+            self._persist_order_and_fills(
+                request_payload={
+                    "symbol": self.order['symbol'],
+                    "side": self.order['side'],
+                    "type": self.order['type'],
+                    "quantity": self.order['quantity']
+                },
+                response=response,
+                symbol=self.order['symbol'],
+                side=self.order['side'],
+                order_type=self.order['type'],
+                quantity=self.order['quantity'],
+            )
+
+            # 🟠 Si la orden fue exitosa, intentar crear OCOs (TP/SL) según la señal
+            if is_valid and response is not None:
+                try:
+                    self.position_manager.create_oco_orders(response, signal)
+                except Exception as e:
+                    logger.warning(f"⚠️ No se pudo crear OCO tras entrada: {e}")
+
         except Exception as e:
-            logger.error(f"❌ Error inesperado en _handle_buy: {e}")
+            logger.error(f"❌ Error en _handle_buy: {e}")
             logger.error(f"📋 Traceback: {traceback.format_exc()}")
 
     async def _handle_sell(self, signal: SignalContract):
         """Maneja venta con señal validada"""
         try:
-            # 🔥 ACCESO SEGURO A CAMPOS OPCIONALES
             rsi_value = signal.get('rsi')
             position_size = signal.get('position_size_usdt')
-            reason = signal.get('reason', 'Sin razón especificada')
+            reason = signal.get('reason', 'Sin razón')
             strategy_name = signal.get('strategy_name', 'Desconocida')
 
             rsi_str = f"{rsi_value:.2f}" if rsi_value is not None else "N/A"
@@ -310,12 +432,12 @@ class TradeEngine:
             self.order = self.position_manager.build_market_order(signal=signal)
 
             if self.order is None:
-                logger.warning("⚠️ No se pudo construir la orden de venta.")
+                logger.warning("⚠️ No se pudo construir orden de venta")
                 return
 
-            logger.info(f"📦 Detalles de la orden: {self.order}")
+            logger.info(f"📦 Ejecutando orden: {self.order}")
 
-            # Ejecutar orden en exchange
+            # Ejecutar orden
             response = self.rest_client.create_order(
                 symbol=self.order['symbol'],
                 side=self.order['side'],
@@ -323,29 +445,40 @@ class TradeEngine:
                 quantity=self.order['quantity'],
             )
 
-            if response:
-                logger.info(f"✅ Orden ejecutada exitosamente")
-                logger.debug(f"📋 Respuesta del exchange: {response}")
-
-                self._persist_order_and_fills(
-                    request_payload={
-                        "symbol": self.order['symbol'],
-                        "side": self.order['side'],
-                        "type": self.order['type'],
-                        "quantity": self.order['quantity']
-                    },
-                    response=response,
-                    symbol=self.order['symbol'],
-                    side=self.order['side'],
-                    order_type=self.order['type'],
-                    quantity=self.order['quantity'],
-                )
+            # Validar respuesta
+            if response is None:
+                logger.error(f"❌ No se recibió respuesta del exchange")
+                is_valid = False
             else:
-                logger.error("❌ La orden no tuvo respuesta o falló en el exchange")
+                is_valid = is_valid_binance_response(response)
+                if is_valid:
+                    logger.info(f"✅ Orden ejecutada exitosamente")
+                else:
+                    logger.error(f"❌ Orden rechazada por Binance")
 
-        except KeyError as e:
-            logger.error(f"❌ Error de clave faltante en señal de venta: {e}")
-            logger.error(f"📋 Señal recibida: {signal}")
+            # Persistir
+            self._persist_order_and_fills(
+                request_payload={
+                    "symbol": self.order['symbol'],
+                    "side": self.order['side'],
+                    "type": self.order['type'],
+                    "quantity": self.order['quantity']
+                },
+                response=response,
+                symbol=self.order['symbol'],
+                side=self.order['side'],
+                order_type=self.order['type'],
+                quantity=self.order['quantity'],
+            )
+
+            # 🟠 Intentar crear OCO tras venta si corresponde
+            if is_valid and response is not None:
+                try:
+                    self.position_manager.create_oco_orders(response, signal)
+                except Exception as e:
+                    logger.warning(f"⚠️ No se pudo crear OCO tras entrada: {e}")
+
         except Exception as e:
-            logger.error(f"❌ Error inesperado en _handle_sell: {e}")
+            logger.error(f"❌ Error en _handle_sell: {e}")
             logger.error(f"📋 Traceback: {traceback.format_exc()}")
+

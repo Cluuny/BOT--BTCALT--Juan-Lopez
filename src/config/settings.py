@@ -17,7 +17,6 @@ _env_path = _find_dotenv(Path(__file__))
 if _env_path:
     load_dotenv(_env_path)
 else:
-    # Fallback: intenta cargar .env desde cwd (comportamiento por defecto)
     load_dotenv()
 
 
@@ -28,10 +27,9 @@ class Settings:
     API_SECRET: str = os.getenv("API_SECRET")
     WS_URL: str = "wss://stream.binance.com:9443/ws"
 
-    if not API_KEY or not API_SECRET:
-        raise ValueError("⚠️ API_KEY y API_SECRET deben estar en el .env")
+    # NOTA: No validar aquí para permitir import en entornos de test/offline.
+    # Validación se realiza al instanciar el cliente REST.
 
-    # Endpoints según el modo
     if MODE == "TESTNET":
         REST_URL = "https://testnet.binance.vision/api"
     else:
@@ -47,6 +45,14 @@ class Settings:
     @property
     def DATABASE_URL(self):
         return f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+
+    def validate_api_keys(self) -> None:
+        """
+        Validar que API_KEY / API_SECRET estén presentes.
+        Llamar desde el cliente REST antes de instanciar la librería externa.
+        """
+        if not self.API_KEY or not self.API_SECRET:
+            raise ValueError("⚠️ API_KEY y API_SECRET deben estar definidas en el .env o variables de entorno")
 
 
 settings = Settings()

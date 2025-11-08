@@ -1,7 +1,10 @@
 # contracts/signal_contract.py
-from typing import TypedDict, Optional, Union
+from typing import TypedDict, Optional, Any, TYPE_CHECKING
 from datetime import datetime
-from strategies.BaseStrategy import BaseStrategy
+
+if TYPE_CHECKING:
+    # Solo para checking de tipos en tiempo de desarrollo; evita import runtime y circularidad
+    from strategies.BaseStrategy import BaseStrategy
 
 
 class SignalContract(TypedDict):
@@ -13,7 +16,8 @@ class SignalContract(TypedDict):
     symbol: str
     type: str  # "BUY" or "SELL"
     price: float
-    risk_params: BaseStrategy.RiskParameters
+    # En tiempo de ejecución usamos Any para evitar importar BaseStrategy y provocar circular imports
+    risk_params: Any
 
     # 🔹 CAMPOS OPCIONALES (dependen de la estrategia)
     rsi: Optional[float]  # Para estrategias RSI
@@ -65,12 +69,57 @@ class ValidatedSignal:
         if price <= 0:
             raise ValueError(f"❌ Precio inválido: debe ser positivo, recibió {price}")
 
+        # 🔹 VALIDAR RISK PARAMETERS (estandarizar position_size)
+        rp = signal_data['risk_params']
+        # Puede venir como dict o como objeto con atributo position_size
+        pos_size = None
+        try:
+            if isinstance(rp, dict):
+                pos_size = rp.get('position_size', None)
+            else:
+                pos_size = getattr(rp, 'position_size', None)
+        except Exception:
+            pos_size = None
+
+        # Si la señal proporciona position_size_usdt, lo permitimos (override absoluto).
+        if 'position_size_usdt' in signal_data and signal_data.get('position_size_usdt') is not None:
+            # convertir a float si es posible
+            try:
+                signal_data['position_size_usdt'] = float(signal_data['position_size_usdt'])
+                if signal_data['position_size_usdt'] <= 0:
+                    raise ValueError("position_size_usdt debe ser mayor que 0")
+            except Exception:
+                raise ValueError("position_size_usdt inválido, debe ser numérico mayor a 0")
+        else:
+            # si no viene position_size_usdt, exigimos position_size fraccional en risk_params
+            if pos_size is None:
+                raise ValueError("❌ risk_params.position_size obligatorio si no se provee position_size_usdt")
+            try:
+                pos_size_f = float(pos_size)
+                if not (0 < pos_size_f <= 1):
+                    raise ValueError("❌ risk_params.position_size debe ser >0 y <=1 (fracción del balance)")
+                # Normalizar dentro de risk_params si es dict
+                if isinstance(rp, dict):
+                    rp['position_size'] = pos_size_f
+                else:
+                    # si es objeto, intentar setear atributo
+                    try:
+                        setattr(rp, 'position_size', pos_size_f)
+                    except Exception:
+                        pass
+            except Exception as e:
+                raise ValueError(f"❌ risk_params.position_size inválido: {e}")
+
         # 🔹 NORMALIZAR CAMPOS
         normalized_signal = signal_data.copy()
         normalized_signal['price'] = float(price)
 
         if 'rsi' in normalized_signal and normalized_signal['rsi'] is not None:
             normalized_signal['rsi'] = float(normalized_signal['rsi'])
+
+        # Normalizar razon y timestamps simples
+        if 'position_size_usdt' in normalized_signal and normalized_signal['position_size_usdt'] is not None:
+            normalized_signal['position_size_usdt'] = float(normalized_signal['position_size_usdt'])
 
         # Agregar meta-datos automáticamente
         normalized_signal.setdefault('received_at', datetime.utcnow().isoformat())
@@ -103,3 +152,4 @@ class DailyOpenSignalContract(SignalContract):
     position_size_usdt: float  # Obligatorio en esta estrategia
     timestamp: str
     reason: str
+

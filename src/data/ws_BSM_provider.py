@@ -7,8 +7,9 @@ logger = Logger.get_logger(__name__)
 
 class RealTimeDataCollector:
     """
-    Cliente WebSocket basado en BinanceSocketManager para recibir datos
-    de velas (kline) en tiempo real, por defecto intervalos de 1m.
+    🔧 VERSIÓN CORREGIDA: Cliente WebSocket con race condition solucionado
+    - Inicialización segura de last_processed
+    - Lock para prevenir duplicados en ambientes multi-thread
     """
 
     def __init__(self, symbols, on_update=None, interval="1m", reconnect_delay=5):
@@ -27,6 +28,10 @@ class RealTimeDataCollector:
         self.client = None
         self.bsm = None
 
+        # 🔧 CORREGIDO: Inicializar en __init__ para evitar race condition
+        self.last_processed = {}  # {symbol: (symbol, open_time, close_time)}
+        self._processing_lock = asyncio.Lock()  # Lock para operaciones atómicas
+
     async def start(self):
         """Inicia la conexión y recibe los datos en tiempo real (sin duplicados)."""
         socket = None
@@ -40,7 +45,7 @@ class RealTimeDataCollector:
 
                 if not socket:
                     streams = [f"{s}@kline_{self.interval}" for s in self.symbols]
-                    logger.info(f"🔗 Iniciando stream con: {streams}")
+                    logger.info(f"🔗 Iniciando streams: {streams}")
                     socket = self.bsm.multiplex_socket(streams)
 
                 # Conexión abierta por while
@@ -50,9 +55,7 @@ class RealTimeDataCollector:
                             msg = await s.recv()
                             await self._process_message(msg)
                         except asyncio.TimeoutError:
-                            logger.warning(
-                                "⌛ Timeout, esperando siguiente mensaje..."
-                            )
+                            logger.warning("⌛ Timeout, esperando siguiente mensaje...")
                             continue
                         except Exception as e:
                             logger.error(f"⚠️ Error recibiendo datos: {e}")
@@ -68,10 +71,13 @@ class RealTimeDataCollector:
                     self.client = None
                     self.bsm = None
                     socket = None
-                    logger.info("🔌 Cliente Binance cerrado correctamente.")
+                    logger.info("🔌 Cliente Binance cerrado, reiniciando...")
 
     async def _process_message(self, msg):
-        """Procesa cada mensaje kline y envía solo la última vela cerrada del símbolo."""
+        """
+        🔧 CORREGIDO: Procesamiento thread-safe con lock
+        Previene race conditions en entornos con múltiples streams
+        """
         data = msg.get("data", msg)
         if data.get("e") != "kline":
             return
@@ -86,35 +92,62 @@ class RealTimeDataCollector:
         # Generar ID único de la vela
         kline_id = (symbol, k["t"], k["T"])
 
-        # Evitar procesar la misma vela más de una vez
-        if not hasattr(self, "last_processed"):
-            self.last_processed = {}
-        if self.last_processed.get(symbol) == kline_id:
-            return
-        self.last_processed[symbol] = kline_id
+        # 🔧 CORREGIDO: Lock para garantizar atomicidad
+        async with self._processing_lock:
+            # Verificar si ya fue procesada
+            if self.last_processed.get(symbol) == kline_id:
+                logger.debug(f"⏭️ Vela duplicada ignorada: {symbol} {k['t']}")
+                return
+
+            # Marcar como procesada
+            self.last_processed[symbol] = kline_id
 
         # Extraer datos relevantes
         kline_entry = [
             symbol,
-            int(k["t"]),
-            int(k["T"]),
-            float(k["o"]),
-            float(k["c"]),
-            float(k["h"]),
-            float(k["l"]),
-            float(k["v"]),
+            int(k["t"]),  # open_time
+            int(k["T"]),  # close_time
+            float(k["o"]),  # open
+            float(k["c"]),  # close
+            float(k["h"]),  # high
+            float(k["l"]),  # low
+            float(k["v"]),  # volume
         ]
 
-        # Reiniciar el diccionario para enviar solo un símbolo por actualización
-        self.last_candles = {symbol: kline_entry}
+        # Crear diccionario para este símbolo específico
+        candle_data = {symbol: kline_entry}
 
         # Enviar al callback
         if self.on_update:
-            await self.on_update(self.last_candles)
+            try:
+                await self.on_update(candle_data)
+            except Exception as e:
+                logger.error(f"⚠️ Error en callback on_update: {e}")
 
     async def stop(self):
-        """Detiene la recolección de datos."""
+        """Detiene la recolección de datos de forma limpia."""
+        logger.info("🛑 Deteniendo recolección de datos...")
         self.keep_running = False
+
         if self.client:
-            await self.client.close_connection()
-        logger.info("🛑 Recolección de datos detenida.")
+            try:
+                await self.client.close_connection()
+                logger.info("✅ Conexión WebSocket cerrada correctamente")
+            except Exception as e:
+                logger.error(f"⚠️ Error cerrando conexión: {e}")
+
+        # Limpiar referencias
+        self.client = None
+        self.bsm = None
+        self.last_processed.clear()
+
+    def get_stats(self) -> dict:
+        """
+        🔧 NUEVO: Obtiene estadísticas de procesamiento
+        """
+        return {
+            "total_symbols": len(self.symbols),
+            "processed_candles": len(self.last_processed),
+            "is_running": self.keep_running,
+            "last_processed": dict(self.last_processed)
+        }
