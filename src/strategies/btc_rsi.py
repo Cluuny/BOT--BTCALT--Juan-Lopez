@@ -10,6 +10,8 @@ from data.rest_data_provider import BinanceRESTClient
 from persistence.db_connection import db
 from persistence.repositories.signal_repository import SignalRepository
 
+from contracts.signal_contract import RSISignalContract, ValidatedSignal
+
 logger = Logger.get_logger(__name__)
 
 class BTC_RSI_Strategy(BaseStrategy):
@@ -61,6 +63,7 @@ class BTC_RSI_Strategy(BaseStrategy):
     async def _handle_update(self, last_candles: dict):
         """
         Actualiza los DataFrames con nuevas velas cerradas recibidas del WebSocket.
+        VERSIÓN CORREGIDA - Usa contrato de señales
         """
         for symbol, kline in last_candles.items():
             try:
@@ -102,79 +105,90 @@ class BTC_RSI_Strategy(BaseStrategy):
                         f"✅ {symbol} actualizado — Último cierre: {close_p:.2f} | RSI: {rsi_value:.2f}"
                     )
 
-                    # 🚨 GENERAR SEÑAL SI HAY SOBRECOMPRA O SOBREVENTA
+                    # 🚨 GENERAR SEÑAL SI HAY SOBRECOMPRA O SOBREVENTA - VERSIÓN CORREGIDA
                     if rsi_value >= self.overbought:
-                        signal = {
-                            "symbol": symbol,
-                            "type": "SELL",
-                            "rsi": float(rsi_value),  # Convertir a float nativo
-                            "price": close_p,
-                            "risk_params": self.RiskParameters(),
-                        }
-                        # Persistir la señal
-                        try:
-                            session = db.get_session()
-                            repo = SignalRepository(session)
-                            repo.create(
-                                bot_id=self.bot_id,
-                                strategy_name="BTC_RSI",
-                                symbol=symbol,
-                                direction="SELL",
-                                price=close_p,
-                                params_snapshot={
-                                    "rsi_period": self.rsi_period,
-                                    "overbought": self.overbought,
-                                    "oversold": self.oversold,
-                                    "risk_params": getattr(signal["risk_params"], "__dict__", str(signal["risk_params"]))
-                                },
-                                run_id=self.run_db_id,
-                                reason="RSI>=overbought",
-                                indicator_snapshot={"RSI": float(rsi_value), "close": close_p},
-                            )
-                            session.close()
-                        except Exception as e:
-                            logger.error(f"Error persistiendo señal SELL: {e}")
-                        await self.signal_queue.put(signal)
-                        logger.info(f"📉 Señal RSI generada: {signal}")
-                        await asyncio.sleep(0.1)  # Pequeño delay entre señales
+                        # ✅ Usar el nuevo método validado
+                        await self._emit_signal(
+                            symbol=symbol,
+                            signal_type="SELL",
+                            price=close_p,
+                            rsi=float(rsi_value),
+                            reason="RSI>=overbought"
+                        )
+                        await asyncio.sleep(0.1)
 
                     elif rsi_value <= self.oversold:
-                        signal = {
-                            "symbol": symbol,
-                            "type": "BUY",
-                            "rsi": float(rsi_value),  # Convertir a float nativo
-                            "price": close_p,
-                            "risk_params": self.RiskParameters(),
-                        }
-                        # Persistir la señal
-                        try:
-                            session = db.get_session()
-                            repo = SignalRepository(session)
-                            repo.create(
-                                bot_id=self.bot_id,
-                                strategy_name="BTC_RSI",
-                                symbol=symbol,
-                                direction="BUY",
-                                price=close_p,
-                                params_snapshot={
-                                    "rsi_period": self.rsi_period,
-                                    "overbought": self.overbought,
-                                    "oversold": self.oversold,
-                                    "risk_params": getattr(signal["risk_params"], "__dict__", str(signal["risk_params"]))
-                                },
-                                run_id=self.run_db_id,
-                                reason="RSI<=oversold",
-                                indicator_snapshot={"RSI": float(rsi_value), "close": close_p},
-                            )
-                            session.close()
-                        except Exception as e:
-                            logger.error(f"Error persistiendo señal BUY: {e}")
-                        await self.signal_queue.put(signal)
-                        logger.info(f"📈 Señal RSI generada: {signal}")
-                        await asyncio.sleep(0.1)  # Pequeño delay entre señales
+                        # ✅ Usar el nuevo método validado
+                        await self._emit_signal(
+                            symbol=symbol,
+                            signal_type="BUY",
+                            price=close_p,
+                            rsi=float(rsi_value),
+                            reason="RSI<=oversold"
+                        )
+                        await asyncio.sleep(0.1)
 
             except Exception as e:
                 logger.error(f"⚠️ Error procesando actualización de {symbol}: {e}")
+
+    async def _emit_signal(self, symbol: str, signal_type: str, price: float, rsi: float, reason: str):
+        """NUEVO MÉTODO: Emite señales validadas según contrato"""
+
+        # 🔥 VALIDACIÓN PREVIA
+        if rsi is None:
+            logger.error(f"❌ No se puede emitir señal: RSI es None para {symbol}")
+            return
+
+        if not isinstance(rsi, (int, float)):
+            logger.error(f"❌ RSI inválido para {symbol}: {rsi} (tipo: {type(rsi)})")
+            return
+
+        signal_data = {
+            "symbol": symbol,
+            "type": signal_type,
+            "price": price,
+            "rsi": float(rsi),  # ✅ Conversión segura
+            "reason": reason,
+            "risk_params": self.RiskParameters(),
+            "strategy_name": "BTC_RSI"
+        }
+
+        # 🔥 VALIDAR Y NORMALIZAR LA SEÑAL
+        validated_signal = ValidatedSignal.create_safe_signal(signal_data)
+
+        if validated_signal is None:
+            logger.error(f"❌ Señal inválida descartada para {symbol}")
+            return
+
+        # Persistir la señal
+        try:
+            session = db.get_session()
+            repo = SignalRepository(session)
+            repo.create(
+                bot_id=self.bot_id,
+                strategy_name="BTC_RSI",
+                symbol=symbol,
+                direction=signal_type,
+                price=price,
+                params_snapshot={
+                    "rsi_period": self.rsi_period,
+                    "overbought": self.overbought,
+                    "oversold": self.oversold,
+                    "risk_params": getattr(validated_signal["risk_params"], "__dict__",
+                                           str(validated_signal["risk_params"]))
+                },
+                run_id=self.run_db_id,
+                reason=reason,
+                indicator_snapshot={"RSI": float(rsi), "close": price},
+            )
+            session.close()
+        except Exception as e:
+            logger.error(f"Error persistiendo señal {signal_type}: {e}")
+            return  # ✅ No emitir señal si falla la persistencia
+
+        # 🔥 ENVIAR SEÑAL VALIDADA
+        await self.signal_queue.put(validated_signal)
+        logger.info(f"📨 Señal BTC_RSI validada: {signal_type} {symbol} @ {price:.2f} — {reason}")
 
     class RiskParameters(BaseStrategy.RiskParameters):
         def __init__(self):

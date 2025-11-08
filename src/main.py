@@ -73,7 +73,7 @@ async def main():
     # Crear sesión y asegurar BotConfig
     session = db.get_session()
     bot_repo = BotConfigRepository(session)
-    bot = bot_repo.create_if_not_exists(name="DefaultBot", exchange="BINANCE", mode="TESTNET")
+    bot = bot_repo.create_if_not_exists(name="DefaultBot", exchange="BINANCE", mode="REAL")
 
     # Iniciar un BotRun
     run_repo = BotRunRepository(session)

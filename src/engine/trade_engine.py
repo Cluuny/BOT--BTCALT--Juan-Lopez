@@ -1,8 +1,11 @@
 import asyncio
+import traceback
+
 from utils.logger import Logger
 from position.position_manager import PositionManager
 
 from strategies.BaseStrategy import BaseStrategy
+from contracts.signal_contract import ValidatedSignal, SignalContract
 from data.rest_data_provider import BinanceRESTClient
 from persistence.db_connection import db
 from persistence.repositories.order_repository import OrderRepository
@@ -29,24 +32,56 @@ class TradeEngine:
         self.order = None
 
     async def start(self):
-        """Escucha continuamente la cola de señales."""
+        """Escucha continuamente la cola de señales VALIDADAS."""
+        logger.info("🚀 Trade Engine iniciado - Esperando señales validadas...")
+
         while True:
-            signal = await self.signal_queue.get()
-            logger.info(f"📡 TradeEngine recibió señal: {signal}")
+            raw_signal = await self.signal_queue.get()
 
-            # Aquí luego puedes conectar órdenes, gestión de riesgo, etc.
-            await self.handle_signal(signal)
+            # 🔥 VALIDAR LA SEÑAL ANTES DE PROCESAR
+            validated_signal = ValidatedSignal.create_safe_signal(raw_signal)
 
+            if validated_signal is None:
+                logger.error("❌ Señal descartada por no cumplir contrato")
+                logger.error(f"📋 Señal inválida: {raw_signal}")
+                self.signal_queue.task_done()
+                continue
+
+            logger.info(f"📡 TradeEngine recibió señal VALIDADA")
+            logger.debug(f"🔍 Detalles señal: {validated_signal}")
+
+            await self.handle_signal(validated_signal)
             self.signal_queue.task_done()
 
-    async def handle_signal(self, signal):
-        logger.info(f"🔔 Procesando señal: {signal}")
-        if signal["type"] == "BUY":
-            await self._handle_buy(signal=signal)
-        else:
-            await self._handle_sell(signal=signal)
+    async def handle_signal(self, signal: SignalContract):
+        """Procesa señales que cumplen el contrato"""
+        try:
+            # 🔥 ACCESO SEGURO gracias al contrato
+            strategy_name = signal.get('strategy_name', 'Desconocida')
+            symbol = signal['symbol']
+            signal_type = signal['type']
+            price = signal['price']
 
-    def _persist_order_and_fills(self, request_payload: dict, response: dict, symbol: str, side: str, order_type: str, quantity: float):
+            logger.info(f"🔔 Procesando señal validada | Estrategia: {strategy_name}")
+            logger.info(f"   Símbolo: {symbol} | Tipo: {signal_type} | Precio: {price:.2f}")
+
+            if signal_type == "BUY":
+                await self._handle_buy(signal=signal)
+            elif signal_type == "SELL":
+                await self._handle_sell(signal=signal)
+            else:
+                logger.error(f"❌ Tipo de señal desconocido: {signal_type}")
+
+        except KeyError as e:
+            logger.error(f"❌ Error en señal validada (faltan campos obligatorios): {e}")
+            logger.error(f"📋 Señal recibida: {signal}")
+        except Exception as e:
+            logger.error(f"❌ Error inesperado en handle_signal: {e}")
+            logger.error(f"📋 Traceback: {traceback.format_exc()}")
+
+    def _persist_order_and_fills(self, request_payload: dict, response: dict, symbol: str, side: str, order_type: str,
+                                 quantity: float):
+        """Persiste la orden y sus fills en la base de datos"""
         session = db.get_session()
         try:
             order_repo = OrderRepository(session)
@@ -184,65 +219,133 @@ class TradeEngine:
                         pass
                 except Exception as e:
                     logger.error(f"Error tomando BalanceSnapshot post-FILLED: {e}")
+
+            logger.info(f"💾 Orden {order.id} persistida correctamente para {symbol}")
+
+        except Exception as e:
+            logger.error(f"❌ Error persistiendo orden y fills: {e}")
+            logger.error(f"📋 Traceback: {traceback.format_exc()}")
         finally:
             session.close()
 
-    async def _handle_buy(self, signal):
-        logger.info(
-            f"🟢 Acción: ejecutar compra en {signal['symbol']} a {signal['price']} (RSI {signal['rsi']:.2f})"
-        )
-        self.order = self.position_manager.build_market_order(signal=signal)
+    async def _handle_buy(self, signal: SignalContract):
+        """Maneja compra con señal validada"""
+        try:
+            # 🔥 ACCESO SEGURO A CAMPOS OPCIONALES
+            rsi_value = signal.get('rsi')
+            position_size = signal.get('position_size_usdt')
+            reason = signal.get('reason', 'Sin razón especificada')
+            strategy_name = signal.get('strategy_name', 'Desconocida')
 
-        if self.order is None:
-            logger.warning("⚠️ No se pudo construir la orden de compra.")
-            return
+            rsi_str = f"{rsi_value:.2f}" if rsi_value is not None else "N/A"
+            position_str = f"{position_size:.2f}" if position_size is not None else "N/A"
 
-        logger.info(f"Detalles de la orden: {self.order}")
+            logger.info(
+                f"🟢 COMPRA | {signal['symbol']} @ {signal['price']:.2f} | "
+                f"RSI: {rsi_str} | Tamaño: {position_str} USDT | "
+                f"Estrategia: {strategy_name} | Razón: {reason}"
+            )
 
-        # Llamar a create_order desempaquetando el diccionario
-        response = self.rest_client.create_order(
-            symbol=self.order['symbol'],
-            side=self.order['side'],
-            type_=self.order['type'],
-            quantity=self.order['quantity'],
-        )
-        logger.info(f"✅ Orden ejecutada: {response}")
-        if response:
-            self._persist_order_and_fills(
-                request_payload={"symbol": self.order['symbol'], "side": self.order['side'], "type": self.order['type'], "quantity": self.order['quantity']},
-                response=response,
+            self.order = self.position_manager.build_market_order(signal=signal)
+
+            if self.order is None:
+                logger.warning("⚠️ No se pudo construir la orden de compra.")
+                return
+
+            logger.info(f"📦 Detalles de la orden: {self.order}")
+
+            # Ejecutar orden en exchange
+            response = self.rest_client.create_order(
                 symbol=self.order['symbol'],
                 side=self.order['side'],
-                order_type=self.order['type'],
+                type_=self.order['type'],
                 quantity=self.order['quantity'],
             )
 
-    async def _handle_sell(self, signal):
-        logger.info(
-            f"🔴 Acción: ejecutar venta en {signal['symbol']} a {signal['price']} (RSI {signal['rsi']:.2f})"
-        )
-        self.order = self.position_manager.build_market_order(signal=signal)
+            if response:
+                logger.info(f"✅ Orden ejecutada exitosamente")
+                logger.debug(f"📋 Respuesta del exchange: {response}")
 
-        if self.order is None:
-            logger.warning("⚠️ No se pudo construir la orden de venta.")
-            return
+                self._persist_order_and_fills(
+                    request_payload={
+                        "symbol": self.order['symbol'],
+                        "side": self.order['side'],
+                        "type": self.order['type'],
+                        "quantity": self.order['quantity']
+                    },
+                    response=response,
+                    symbol=self.order['symbol'],
+                    side=self.order['side'],
+                    order_type=self.order['type'],
+                    quantity=self.order['quantity'],
+                )
+            else:
+                logger.error("❌ La orden no tuvo respuesta o falló en el exchange")
 
-        logger.info(f"Detalles de la orden: {self.order}")
+        except KeyError as e:
+            logger.error(f"❌ Error de clave faltante en señal de compra: {e}")
+            logger.error(f"📋 Señal recibida: {signal}")
+        except Exception as e:
+            logger.error(f"❌ Error inesperado en _handle_buy: {e}")
+            logger.error(f"📋 Traceback: {traceback.format_exc()}")
 
-        # Llamar a create_order desempaquetando el diccionario
-        response = self.rest_client.create_order(
-            symbol=self.order['symbol'],
-            side=self.order['side'],
-            type_=self.order['type'],
-            quantity=self.order['quantity'],
-        )
-        logger.info(f"✅ Orden ejecutada: {response}")
-        if response:
-            self._persist_order_and_fills(
-                request_payload={"symbol": self.order['symbol'], "side": self.order['side'], "type": self.order['type'], "quantity": self.order['quantity']},
-                response=response,
+    async def _handle_sell(self, signal: SignalContract):
+        """Maneja venta con señal validada"""
+        try:
+            # 🔥 ACCESO SEGURO A CAMPOS OPCIONALES
+            rsi_value = signal.get('rsi')
+            position_size = signal.get('position_size_usdt')
+            reason = signal.get('reason', 'Sin razón especificada')
+            strategy_name = signal.get('strategy_name', 'Desconocida')
+
+            rsi_str = f"{rsi_value:.2f}" if rsi_value is not None else "N/A"
+            position_str = f"{position_size:.2f}" if position_size is not None else "N/A"
+
+            logger.info(
+                f"🔴 VENTA | {signal['symbol']} @ {signal['price']:.2f} | "
+                f"RSI: {rsi_str} | Tamaño: {position_str} USDT | "
+                f"Estrategia: {strategy_name} | Razón: {reason}"
+            )
+
+            self.order = self.position_manager.build_market_order(signal=signal)
+
+            if self.order is None:
+                logger.warning("⚠️ No se pudo construir la orden de venta.")
+                return
+
+            logger.info(f"📦 Detalles de la orden: {self.order}")
+
+            # Ejecutar orden en exchange
+            response = self.rest_client.create_order(
                 symbol=self.order['symbol'],
                 side=self.order['side'],
-                order_type=self.order['type'],
+                type_=self.order['type'],
                 quantity=self.order['quantity'],
             )
+
+            if response:
+                logger.info(f"✅ Orden ejecutada exitosamente")
+                logger.debug(f"📋 Respuesta del exchange: {response}")
+
+                self._persist_order_and_fills(
+                    request_payload={
+                        "symbol": self.order['symbol'],
+                        "side": self.order['side'],
+                        "type": self.order['type'],
+                        "quantity": self.order['quantity']
+                    },
+                    response=response,
+                    symbol=self.order['symbol'],
+                    side=self.order['side'],
+                    order_type=self.order['type'],
+                    quantity=self.order['quantity'],
+                )
+            else:
+                logger.error("❌ La orden no tuvo respuesta o falló en el exchange")
+
+        except KeyError as e:
+            logger.error(f"❌ Error de clave faltante en señal de venta: {e}")
+            logger.error(f"📋 Señal recibida: {signal}")
+        except Exception as e:
+            logger.error(f"❌ Error inesperado en _handle_sell: {e}")
+            logger.error(f"📋 Traceback: {traceback.format_exc()}")

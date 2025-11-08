@@ -82,28 +82,26 @@ class BinanceRESTClient:
         return all_klines
 
     def get_klines(self, symbol: str, interval: str = "1m", limit: int = 100):
-        """Obtiene velas históricas (candlesticks)."""
+        """Obtiene velas históricas - mantener formato CONSISTENTE con WebSocket"""
         symbol = symbol.upper()
         klines = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
-        klines = [
-            {
-                "symbol": symbol,
-                "open_time": k[0],
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
-                "close_time": k[6],
-                "quote_asset_volume": float(k[7]),
-                "number_of_trades": k[8],
-                "taker_buy_base_asset_volume": float(k[9]),
-                "taker_buy_quote_asset_volume": float(k[10]),
-                "ignore": k[11],
-            }
-            for k in klines
-        ]
-        return klines
+
+        # 🔥 FORMATO CONSISTENTE: Usar LISTAS como WebSocket
+        formatted_klines = []
+        for k in klines:
+            formatted_kline = [
+                symbol,  # Índice 0: symbol
+                int(k[0]),  # Índice 1: open_time
+                int(k[6]),  # Índice 2: close_time
+                float(k[1]),  # Índice 3: open
+                float(k[4]),  # Índice 4: close (IMPORTANTE: usar close, no open)
+                float(k[2]),  # Índice 5: high
+                float(k[3]),  # Índice 6: low
+                float(k[5]),  # Índice 7: volume
+            ]
+            formatted_klines.append(formatted_kline)
+
+        return formatted_klines
 
     # ======================
     # 🔹 ENDPOINTS PRIVADOS

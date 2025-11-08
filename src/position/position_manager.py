@@ -62,20 +62,23 @@ class PositionManager:
         return quantity
 
     def _get_available_USDT_balance(self) -> float:
-        """Obtiene el balance disponible del activo especificado."""
+        """Obtiene el balance disponible de USDT - VERSIÓN CORREGIDA"""
         try:
             balance_info = self.rest_client.get_USDT_balance()
+
+            # 🔥 MANEJO CORRECTO: get_USDT_balance SIEMPRE retorna dict
             if balance_info is None:
-                logger.warning(f"⚠️ No se encontró balance para el activo USDT.")
+                logger.warning("⚠️ No se encontró balance para USDT.")
                 return 0.0
 
-            # Extraer el balance disponible del diccionario
             if isinstance(balance_info, dict):
                 free_balance = float(balance_info.get("free", 0.0))
+                logger.debug(f"💰 Balance USDT disponible: {free_balance:.2f}")
                 return free_balance
-
-            # Si ya es un número, devolverlo directamente
-            return float(balance_info)
+            else:
+                # Caso inesperado - log de advertencia
+                logger.warning(f"⚠️ Formato inesperado de balance: {type(balance_info)}")
+                return 0.0
 
         except Exception as e:
             logger.error(f"⚠️ Error obteniendo balance disponible: {e}")
