@@ -17,34 +17,34 @@ class BaseStrategy(ABC):
     class RiskParameters:
         def __init__(
             self,
-            # --- 1️⃣ Exposición por operación ---
+            # --- Exposicion por operacion ---
             position_size=-1,  # Porcentaje del capital a arriesgar por operación
             max_risk_per_trade=-1,  # Riesgo máximo por operación (en % del equity)
             leverage=-1,  # Apalancamiento usado
             stop_loss_pct=-1,  # Stop Loss relativo (%)
             take_profit_pct=-1,  # Take Profit relativo (%)
             risk_reward_ratio=-1,  # Relación riesgo/beneficio mínima
-            # --- 2️⃣ Exposición total (cartera) ---
+            # --- Exposicion total (cartera) ---
             max_open_positions=-1,  # Número máximo de posiciones simultáneas
             max_sector_exposure=-1,  # % máximo del capital en un mismo sector
             max_symbol_exposure=-1,  # % máximo del capital en un mismo activo
-            # --- 3️⃣ Riesgo de capital (drawdown y límites globales) ---
+            # --- Riesgo de capital (drawdown y limites globales) ---
             max_drawdown=-1,  # Drawdown máximo permitido (%)
             max_daily_loss=-1,  # Pérdida máxima diaria permitida (%)
             max_weekly_loss=-1,  # Pérdida máxima semanal permitida (%)
             max_total_loss=-1,  # Pérdida total acumulada máxima (%)
-            # --- 4️⃣ Gestión de posición ---
+            # --- Gestion de posicion ---
             trailing_stop_pct=-1,  # Stop dinámico (%), -1 si no aplica
             cooldown_period=-1,  # Tiempo mínimo (en minutos) entre trades
             allow_pyramiding=False,  # Permitir añadir a una posición existente
             max_additions=-1,  # Nº máximo de adiciones si pyramiding=True
             partial_take_profit_levels=-1,  # Lista o número de niveles de TP parcial
-            # --- 5️⃣ Gestión temporal ---
+            # --- Gestion temporal ---
             max_holding_time=-1,  # Tiempo máximo de mantener posición (minutos)
             session_start=-1,  # Hora de inicio de operativa (HHMM o timestamp)
             session_end=-1,  # Hora de fin de operativa
             cooldown_after_loss=-1,  # Minutos de pausa tras una pérdida
-            # --- 6️⃣ Validación de señal / condiciones externas ---
+            # --- Validacion de señal / condiciones externas ---
             news_filter_enabled=False,  # Filtrar por noticias
             volatility_threshold=-1,  # Volatilidad mínima o máxima tolerada (por ATR, etc.)
             correlation_limit=-1,  # Correlación máxima permitida con otra posición

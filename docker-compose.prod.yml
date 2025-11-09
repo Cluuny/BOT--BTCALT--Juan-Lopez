@@ -1,15 +1,13 @@
-version: '3.8'
-
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine  # Alpine para menor tamaño
     container_name: trading_postgres_db
     restart: unless-stopped
 
-    # Secrets desde archivos (no env_file)
+    # Variables de entorno (se leen de secrets en runtime)
     environment:
-      POSTGRES_USER_FILE: /run/secrets/db_user
-      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_USER: trading_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trading_pass}
       POSTGRES_DB: ${DB_NAME:-trading_bot}
       POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
 

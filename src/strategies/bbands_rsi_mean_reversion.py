@@ -71,7 +71,7 @@ class BBANDS_RSI_MeanReversionStrategy(BaseStrategy):
         self.last_buy_time: dict[str, datetime] = {}
 
     # =====================================================
-    # 🔹 CARGA INICIAL
+    # CARGA INICIAL
     # =====================================================
     def _compute_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calcula indicadores técnicos con manejo de DataFrames pequeños."""
@@ -138,11 +138,11 @@ class BBANDS_RSI_MeanReversionStrategy(BaseStrategy):
             self.candles[symbol] = df
 
         logger.info(
-            f"✅ Datos históricos iniciales cargados para estrategia BBANDS_RSI_MR ({len(symbols)} símbolos)."
+            f"Datos historicos iniciales cargados para estrategia BBANDS_RSI_MR ({len(symbols)} simbolos)."
         )
 
     # =====================================================
-    # 🔹 ACTUALIZACIÓN EN TIEMPO REAL
+    # ACTUALIZACION EN TIEMPO REAL
     # =====================================================
     async def _handle_update(self, last_candles: dict):
         """
@@ -171,7 +171,7 @@ class BBANDS_RSI_MeanReversionStrategy(BaseStrategy):
                 }
 
                 if symbol not in self.candles:
-                    logger.warning(f"⚠️ No existe DataFrame para {symbol}, se crea uno nuevo.")
+                    logger.warning(f"No existe DataFrame para {symbol}, se crea uno nuevo.")
                     # Crear DataFrame inicial con la nueva vela
                     df = pd.DataFrame([new_row])
                 else:
@@ -233,7 +233,7 @@ class BBANDS_RSI_MeanReversionStrategy(BaseStrategy):
                 rsi_str = f"{rsi_value:.2f}" if rsi_value is not None else "NA"
 
                 logger.info(
-                    f"✅ {symbol} actualizado — Cierre: {close_p:.4f} | RSI: {rsi_str} | "
+                    f"{symbol} actualizado - Cierre: {close_p:.4f} | RSI: {rsi_str} | "
                     f"BB Lower: {bbl_str} | SMA50: {sma50_str}"
                 )
 
@@ -262,56 +262,56 @@ class BBANDS_RSI_MeanReversionStrategy(BaseStrategy):
                     reason = "close<=BB_lower & RSI<=40 & close>SMA50" + (
                         " & vol>vol_sma" if self.enforce_volume_filter else "")
 
-                    # ✅ Solo emitir si RSI es válido
+                    # Solo emitir si RSI es valido
                     if rsi_value is not None:
                         await self._emit_signal(
                             symbol=symbol,
                             signal_type="BUY",
                             price=close_p,
-                            rsi=rsi_value,  # ✅ Sin "or 0.0"
+                            rsi=rsi_value,  # Sin "or 0.0"
                             reason=reason,
                             indicator_snapshot=indicator_snapshot,
                         )
                         self.last_buy_time[symbol] = datetime.now(timezone.utc)
                         await asyncio.sleep(0.1)
                     else:
-                        logger.warning(f"⚠️ RSI no disponible para {symbol}, señal omitida")
+                        logger.warning(f"RSI no disponible para {symbol}, senal omitida")
                         continue
 
                 logger.debug("SELL deshabilitado para %s: solo se generan señales BUY", symbol)
 
             except Exception as e:
-                logger.error(f"⚠️ Error procesando actualización de {symbol}: {e}")
+                logger.error(f"Error procesando actualizacion de {symbol}: {e}")
                 logger.error(f"Traceback: {traceback.format_exc()}")
 
     async def _emit_signal(self, symbol: str, signal_type: str, price: float, rsi: float, reason: str,
                            indicator_snapshot: dict):
-        """Construye señal validada según contrato RSI - VERSIÓN CORREGIDA"""
+        """Construye senal validada segun contrato RSI - VERSION CORREGIDA"""
 
-        # 🔥 VALIDACIÓN ROBUSTA: No emitir señal si RSI no es válido
+        # VALIDACION ROBUSTA: No emitir senal si RSI no es valido
         if rsi is None:
-            logger.error(f"❌ No se puede emitir señal: RSI es None para {symbol}")
+            logger.error(f"No se puede emitir senal: RSI es None para {symbol}")
             return
 
         if not isinstance(rsi, (int, float)):
-            logger.error(f"❌ RSI inválido para {symbol}: {rsi} (tipo: {type(rsi)})")
+            logger.error(f"RSI invalido para {symbol}: {rsi} (tipo: {type(rsi)})")
             return
 
         signal_data = {
             "symbol": symbol,
             "type": signal_type,
             "price": price,
-            "rsi": float(rsi),  # ✅ Conversión segura
+            "rsi": float(rsi),  # Conversion segura
             "reason": reason,
             "risk_params": self.RiskParameters(),
-            "strategy_name": "BBANDS_RSI_MeanReversion"  # ✅ Nombre correcto
+            "strategy_name": "BBANDS_RSI_MeanReversion"  # Nombre correcto
         }
 
-        # 🔥 VALIDAR Y NORMALIZAR LA SEÑAL
+        # VALIDAR Y NORMALIZAR LA SEÑAL
         validated_signal = ValidatedSignal.create_safe_signal(signal_data)
 
         if validated_signal is None:
-            logger.error(f"❌ Señal inválida descartada para {symbol}")
+            logger.error(f"Senal invalida descartada para {symbol}")
             return
 
         # Persistir la señal
@@ -320,7 +320,7 @@ class BBANDS_RSI_MeanReversionStrategy(BaseStrategy):
             repo = SignalRepository(session)
             repo.create(
                 bot_id=self.bot_id,
-                strategy_name="BBANDS_RSI_MeanReversion",  # ✅ Nombre consistente
+                strategy_name="BBANDS_RSI_MeanReversion",  # Nombre consistente
                 symbol=symbol,
                 direction=signal_type,
                 price=price,
@@ -344,18 +344,18 @@ class BBANDS_RSI_MeanReversionStrategy(BaseStrategy):
             )
             session.close()
         except Exception as e:
-            logger.error(f"Error persistiendo señal {signal_type}: {e}")
-            return  # ✅ No emitir señal si falla la persistencia
+            logger.error(f"Error persistiendo senal {signal_type}: {e}")
+            return  # No emitir senal si falla la persistencia
 
-        # 🔥 ENVIAR SEÑAL VALIDADA
+        # ENVIAR SEÑAL VALIDADA
         await self.signal_queue.put(validated_signal)
-        logger.info(f"📨 Señal BBANDS_RSI validada: {signal_type} {symbol} @ {price:.4f} — {reason}")
+        logger.info(f"Senal BBANDS_RSI validada: {signal_type} {symbol} @ {price:.4f} - {reason}")
     class RiskParameters(BaseStrategy.RiskParameters):
         def __init__(self):
             super().__init__(max_drawdown=0.5, position_size=0.01, max_open_positions=5)
 
     # =====================================================
-    # 🔹 INICIO DE LA ESTRATEGIA
+    # INICIO DE LA ESTRATEGIA
     # =====================================================
     async def start(self, symbols: list[str]):
         """Inicia la estrategia con datos históricos y actualizaciones en tiempo real."""

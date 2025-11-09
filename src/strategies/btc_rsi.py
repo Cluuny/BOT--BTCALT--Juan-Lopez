@@ -57,11 +57,11 @@ class BTC_RSI_Strategy(BaseStrategy):
             self.candles[symbol] = df
 
         logger.info(
-            f"✅ Datos históricos iniciales cargados ({len(symbols)} símbolos)."
+            f"Datos historicos iniciales cargados ({len(symbols)} simbolos)."
         )
 
     # =====================================================
-    # 🔹 ACTUALIZACIÓN EN TIEMPO REAL
+    # ACTUALIZACION EN TIEMPO REAL
     # =====================================================
     async def _handle_update(self, last_candles: dict):
         """
@@ -94,7 +94,7 @@ class BTC_RSI_Strategy(BaseStrategy):
 
                 if symbol not in self.candles:
                     logger.warning(
-                        f"⚠️ No existe DataFrame para {symbol}, se crea uno nuevo."
+                        f"No existe DataFrame para {symbol}, se crea uno nuevo."
                     )
                     self.candles[symbol] = new_row
                 else:
@@ -105,12 +105,12 @@ class BTC_RSI_Strategy(BaseStrategy):
 
                     rsi_value = df["RSI"].iloc[-1]
                     logger.info(
-                        f"✅ {symbol} actualizado — Último cierre: {close_p:.2f} | RSI: {rsi_value:.2f}"
+                        f"{symbol} actualizado - Ultimo cierre: {close_p:.2f} | RSI: {rsi_value:.2f}"
                     )
 
-                    # 🚨 GENERAR SEÑAL SI HAY SOBRECOMPRA O SOBREVENTA - VERSIÓN CORREGIDA
+                    # GENERAR SEÑAL SI HAY SOBRECOMPRA O SOBREVENTA - VERSION CORREGIDA
                     if rsi_value >= self.overbought:
-                        # ✅ Usar el nuevo método validado
+                        # Usar el nuevo método validado
                         await self._emit_signal(
                             symbol=symbol,
                             signal_type="SELL",
@@ -121,7 +121,7 @@ class BTC_RSI_Strategy(BaseStrategy):
                         await asyncio.sleep(0.1)
 
                     elif rsi_value <= self.oversold:
-                        # ✅ Usar el nuevo método validado
+                        # Usar el nuevo método validado
                         await self._emit_signal(
                             symbol=symbol,
                             signal_type="BUY",
@@ -132,7 +132,7 @@ class BTC_RSI_Strategy(BaseStrategy):
                         await asyncio.sleep(0.1)
 
             except Exception as e:
-                logger.error(f"⚠️ Error procesando actualización de {symbol}: {e}")
+                logger.error(f"Error procesando actualizacion de {symbol}: {e}")
 
     async def _emit_signal(self, symbol: str, signal_type: str, price: float, rsi: float, reason: str):
         """NUEVO MÉTODO: Emite señales validadas según contrato"""
