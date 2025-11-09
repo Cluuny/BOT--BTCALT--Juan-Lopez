@@ -8,6 +8,7 @@ env/
 ENV/
 env.bak/
 venv.bak/
+.env.production
 
 # Python bytecode / caches
 __pycache__/
