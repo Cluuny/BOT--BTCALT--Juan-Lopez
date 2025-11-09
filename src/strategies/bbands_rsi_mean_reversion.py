@@ -3,7 +3,7 @@ import pandas as pd
 import pandas_ta as ta
 import asyncio
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from strategies.BaseStrategy import BaseStrategy
 
@@ -12,7 +12,7 @@ from data.rest_data_provider import BinanceRESTClient
 from persistence.db_connection import db
 from persistence.repositories.signal_repository import SignalRepository
 
-from contracts.signal_contract import RSISignalContract, ValidatedSignal
+from contracts.signal_contract import ValidatedSignal
 
 logger = Logger.get_logger(__name__)
 
@@ -47,6 +47,7 @@ class BBANDS_RSI_MeanReversionStrategy(BaseStrategy):
             enforce_volume_filter: bool = True,
             max_holding_hours: int = 48,
             timeframe: str = "1m",
+            rest_client: BinanceRESTClient | None = None,
     ):
         self.signal_queue = signal_queue
         self.bot_id = bot_id
@@ -64,7 +65,7 @@ class BBANDS_RSI_MeanReversionStrategy(BaseStrategy):
         self.timeframe = timeframe
 
         self.candles: dict[str, pd.DataFrame] = {}
-        self.rest_client = BinanceRESTClient(testnet=True)
+        self.rest_client = rest_client or BinanceRESTClient(testnet=True)
 
         # Para controlar tiempo máximo en posición (simple: último BUY emitido por símbolo)
         self.last_buy_time: dict[str, datetime] = {}
@@ -121,13 +122,15 @@ class BBANDS_RSI_MeanReversionStrategy(BaseStrategy):
             logger.error(f"Error calculando indicadores: {e}")
             return df
 
-    def _request_for_init(self, symbols: list[str]):
+    async def _request_for_init(self, symbols: list[str]):
         """Solicita datos históricos iniciales para los símbolos."""
         # Necesitamos al menos 50 velas para SMA50 y 20 para BB/volumen
         limit = max(self.sma_period, self.bb_period, self.vol_sma_period) + 5
-        response = self.rest_client.get_all_klines(
-            list_symbols=symbols, interval=self._interval_to_binance(self.timeframe), limit=limit
-        )
+        if hasattr(self.rest_client, 'async_get_all_klines'):
+            response = await self.rest_client.async_get_all_klines(list_symbols=symbols, interval=self._interval_to_binance(self.timeframe), limit=limit)
+        else:
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, self.rest_client.get_all_klines, symbols, self._interval_to_binance(self.timeframe), limit)
 
         for symbol, data in response.items():
             df = pd.DataFrame(data)
@@ -269,7 +272,7 @@ class BBANDS_RSI_MeanReversionStrategy(BaseStrategy):
                             reason=reason,
                             indicator_snapshot=indicator_snapshot,
                         )
-                        self.last_buy_time[symbol] = datetime.utcnow()
+                        self.last_buy_time[symbol] = datetime.now(timezone.utc)
                         await asyncio.sleep(0.1)
                     else:
                         logger.warning(f"⚠️ RSI no disponible para {symbol}, señal omitida")
@@ -356,7 +359,7 @@ class BBANDS_RSI_MeanReversionStrategy(BaseStrategy):
     # =====================================================
     async def start(self, symbols: list[str]):
         """Inicia la estrategia con datos históricos y actualizaciones en tiempo real."""
-        self._request_for_init(symbols=symbols)
+        await self._request_for_init(symbols=symbols)
 
         for symbol, df in self.candles.items():
             logger.info(f"Ultimas 3+ velas de {symbol} (BBANDS_RSI_MR):\n{df.tail(3)}")

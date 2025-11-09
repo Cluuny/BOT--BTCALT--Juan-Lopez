@@ -92,3 +92,8 @@ docker-compose.override.yml
 # Other files
 src/APITest.py
 *.csv
+src/utils/analyze_imports.py
+secrets/
+*.env
+logs/
+backups/

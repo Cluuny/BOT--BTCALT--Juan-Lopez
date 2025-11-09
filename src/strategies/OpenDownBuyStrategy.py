@@ -1,7 +1,6 @@
 from utils.logger import Logger
-import pandas as pd
 import asyncio
-from datetime import datetime, time, timezone
+from datetime import datetime, timezone
 import traceback
 
 from strategies.BaseStrategy import BaseStrategy
@@ -31,6 +30,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
         position_size_percent: float = 100.0,
         base_capital: float = 10.0,
         symbol: str = "BTCUSDT",
+        rest_client: BinanceRESTClient | None = None,
     ):
         self.signal_queue = signal_queue
         self.bot_id = bot_id
@@ -51,19 +51,36 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
         self.last_pnl_notification = None
         self.last_open_check_date = None
 
-        self.rest_client = BinanceRESTClient(testnet=False)
+        self.rest_client = rest_client or BinanceRESTClient(testnet=False)
 
     def _request_for_init(self, symbols: list[str]):
         try:
             logger.info(f"🔍 Solicitando datos diarios para {self.symbol}...")
 
-            # Obtener velas diarias
-            response = self.rest_client.get_all_klines(
-                list_symbols=[self.symbol], interval="1d", limit=5
-            )
+            # Obtener velas diarias (usar async si disponible)
+            if hasattr(self.rest_client, 'async_get_all_klines'):
+                async def _async_load():
+                    return await self.rest_client.async_get_all_klines(list_symbols=[self.symbol], interval="1d", limit=5)
+                loop = asyncio.get_event_loop()
+                response = loop.run_until_complete(_async_load())
+            else:
+                response = self.rest_client.get_all_klines(
+                    list_symbols=[self.symbol], interval="1d", limit=5
+                )
 
             # Asignar Capital Inicial (Reglas de la estrategia)
-            self.base_capital = self.rest_client.get_usdt_balance()
+            # usar versión async si está disponible
+            try:
+                if hasattr(self.rest_client, 'async_get_usdt_balance'):
+                    async def _get_bal():
+                        return await self.rest_client.async_get_usdt_balance()
+                    loop = asyncio.get_event_loop()
+                    self.base_capital = loop.run_until_complete(_get_bal())
+                else:
+                    self.base_capital = self.rest_client.get_usdt_balance()
+            except Exception:
+                # fallback a valor default
+                pass
 
             logger.debug(f"Respuesta de API recibida: {response}")
 
@@ -284,9 +301,12 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
                 f"🔄 Nuevo día detectado ({current_date}). Actualizando precio de apertura..."
             )
 
-            response = self.rest_client.get_all_klines(
-                list_symbols=[self.symbol], interval="1d", limit=1
-            )
+            # usar async si está disponible
+            if hasattr(self.rest_client, 'async_get_all_klines'):
+                response = await self.rest_client.async_get_all_klines(list_symbols=[self.symbol], interval="1d", limit=1)
+            else:
+                loop = asyncio.get_running_loop()
+                response = await loop.run_in_executor(None, self.rest_client.get_all_klines, [self.symbol], "1d", 1)
 
             if self.symbol not in response or len(response[self.symbol]) == 0:
                 logger.error("❌ No se pudo obtener nueva apertura diaria")
@@ -509,6 +529,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
 
     async def start(self, symbols: list[str]):
         """Inicia la estrategia."""
+        # _request_for_init puede ser sync o usar run_until_complete internamente
         self._request_for_init(symbols=[self.symbol])
 
         logger.info(f"🚀 Estrategia BTC_Daily_Open iniciada")

@@ -6,6 +6,8 @@ from utils.logger import Logger
 from typing import List, Optional, Dict, Any
 from binance import Client, BinanceAPIException
 import config.settings as settings
+import asyncio
+from functools import partial
 
 logger = Logger.get_logger(__name__)
 
@@ -110,6 +112,10 @@ class BinanceRESTClient:
         data = self.client.get_symbol_ticker(symbol=symbol.upper())
         return float(data["price"])
 
+    # Alias para compatibilidad con código existente
+    def get_current_price(self, symbol: str) -> float:
+        return self.get_symbol_price(symbol)
+
     def get_all_klines(
         self, list_symbols: List[str], interval: str = "1m", limit: int = 100
     ) -> Dict[str, List]:
@@ -159,8 +165,9 @@ class BinanceRESTClient:
 
     def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
         """Consulta las órdenes abiertas (todas o de un símbolo)."""
+        # Fix: pasar symbol al client si se provee
         if symbol:
-            return self.client.get_open_orders()
+            return self.client.get_open_orders(symbol=symbol.upper())
         return self.client.get_open_orders()
 
     def create_order(
@@ -276,3 +283,42 @@ class BinanceRESTClient:
         except Exception as e:
             logger.error(f"❌ Error cancelando orden: {e}")
             return None
+
+    # =============
+    # Async helpers
+    # =============
+    async def async_run_in_executor(self, func, *args, **kwargs):
+        loop = asyncio.get_running_loop()
+        # usar functools.partial para pasar correctamente args/kwargs
+        return await loop.run_in_executor(None, partial(func, *args, **kwargs))
+
+    async def async_get_current_price(self, symbol: str) -> float:
+        return await self.async_run_in_executor(self.get_current_price, symbol)
+
+    async def async_get_symbol_price(self, symbol: str) -> float:
+        return await self.async_get_current_price(symbol)
+
+    async def async_get_klines(self, symbol: str, interval: str = "1m", limit: int = 100):
+        return await self.async_run_in_executor(self.get_klines, symbol, interval, limit)
+
+    async def async_get_all_klines(self, list_symbols: List[str], interval: str = "1m", limit: int = 100):
+        return await self.async_run_in_executor(self.get_all_klines, list_symbols, interval, limit)
+
+    async def async_get_account_info(self) -> Dict[str, Any]:
+        return await self.async_run_in_executor(self.get_account_info)
+
+    async def async_get_usdt_balance(self) -> float:
+        return await self.async_run_in_executor(self.get_usdt_balance)
+
+    async def async_get_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        return await self.async_run_in_executor(self.get_open_orders, symbol)
+
+    async def async_create_order(self, *args, **kwargs) -> Optional[Dict[str, Any]]:
+        return await self.async_run_in_executor(self.create_order, *args, **kwargs)
+
+    async def async_create_oco_order(self, *args, **kwargs) -> Optional[Dict[str, Any]]:
+        return await self.async_run_in_executor(self.create_oco_order, *args, **kwargs)
+
+    async def async_cancel_order(self, *args, **kwargs) -> Optional[Dict[str, Any]]:
+        return await self.async_run_in_executor(self.cancel_order, *args, **kwargs)
+

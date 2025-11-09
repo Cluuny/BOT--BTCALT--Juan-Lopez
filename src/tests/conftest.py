@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
 
 # Fixture: cliente REST falso y configurable
 class FakeRestClient:
-    def __init__(self, price=50000.0, usdt_balance=1000.0, min_notional=10.0, step_size=0.001, min_qty=0.001, max_qty=100.0):
+    def __init__(self, price=50000.0, usdt_balance=1000.0, min_notional=10.0, step_size=0.0001, min_qty=0.0001, max_qty=100.0):
         self._price = float(price)
         self._usdt_balance = float(usdt_balance)
         self._min_notional = float(min_notional)
@@ -42,6 +42,34 @@ class FakeRestClient:
 
     def get_open_orders(self, symbol: str = None):
         return list(self._open_orders)
+
+    # Simular creación de órdenes: devolver estructura similar a Binance
+    def create_order(self, symbol: str, side: str, type_: str, quantity: float, price: float = None, time_in_force: str = None, stop_price: float = None):
+        order = {
+            'orderId': 'ORD' + str(len(self._open_orders) + 1),
+            'symbol': symbol,
+            'side': side,
+            'type': type_,
+            'status': 'NEW',
+            'executedQty': '0',
+            'origQty': str(quantity),
+            'price': str(price) if price is not None else None,
+        }
+        # no añadir a open_orders automáticamente; dejar que PositionManager lo haga si procede
+        return order
+
+    def create_oco_order(self, symbol: str, side: str, quantity: float, take_profit_price: float, stop_price: float, stop_limit_price: float):
+        oco = {
+            'orderId': 'OCO' + str(len(self._open_orders) + 1),
+            'symbol': symbol,
+            'side': side,
+            'type': 'OCO',
+            'tp': take_profit_price,
+            'sl': stop_price,
+            'stopLimit': stop_limit_price,
+            'status': 'NEW'
+        }
+        return oco
 
     # métodos auxiliares para tests
     def set_price(self, p: float):

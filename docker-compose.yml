@@ -1,31 +1,138 @@
+version: '3.8'
+
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16-alpine  # Alpine para menor tamaño
     container_name: trading_postgres_db
-    restart: always
-    env_file: .env
+    restart: unless-stopped
+
+    # 🔒 Secrets desde archivos (no env_file)
     environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER_FILE: /run/secrets/db_user
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_DB: ${DB_NAME:-trading_bot}
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+
+    # Recursos limitados
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+    # Configuración optimizada para recursos limitados
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=128MB"
+      - "-c"
+      - "max_connections=50"
+      - "-c"
+      - "work_mem=4MB"
+
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"  # Solo localhost
+
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d  # Scripts de inicialización
+
+    secrets:
+      - db_user
+      - db_password
+
+    networks:
+      - trading_network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   trading-bot:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.production
     container_name: trading_bot
-    restart: always
+    restart: unless-stopped
+
     depends_on:
-      - postgres
-    env_file: .env
+      postgres:
+        condition: service_healthy
+
+    # Variables de entorno desde secrets
     environment:
+      # Base de datos
       POSTGRES_HOST: postgres
-      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_DB: ${DB_NAME:-trading_bot}
       POSTGRES_PORT: 5432
+
+      # Binance (desde secrets)
+      MODE: ${MODE:-REAL}
+
+      # Python optimizations
+      PYTHONUNBUFFERED: 1
+      PYTHONOPTIMIZE: 1
+
+    # Recursos limitados
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    secrets:
+      - api_key
+      - api_secret
+      - db_user
+      - db_password
+
     volumes:
-      - ./:/src
+      # Solo logs persistentes
+      - ./logs:/src/logs:rw
+
+    networks:
+      - trading_network
+
+    # Logging limitado para ahorrar espacio
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import sys; sys.exit(0)'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# 🔒 Secrets (archivos en servidor)
+secrets:
+  api_key:
+    file: ./secrets/api_key.txt
+  api_secret:
+    file: ./secrets/api_secret.txt
+  db_user:
+    file: ./secrets/db_user.txt
+  db_password:
+    file: ./secrets/db_password.txt
 
 volumes:
   postgres_data:
+    driver: local
+
+networks:
+  trading_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16

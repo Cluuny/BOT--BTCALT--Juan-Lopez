@@ -1,11 +1,11 @@
 from utils.logger import Logger
 import time
-import uuid
-from typing import Any, Dict, List, Optional
-from decimal import Decimal, ROUND_DOWN
+from typing import Any, Dict, Optional
+from decimal import Decimal
 
 from strategies.BaseStrategy import BaseStrategy
 from data.rest_data_provider import BinanceRESTClient
+import asyncio
 
 logger = Logger.get_logger(__name__)
 
@@ -156,18 +156,34 @@ class PositionManager:
             logger.error(f"⚠️ Error obteniendo balance: {e}")
             return 0.0
 
-    def can_open_position(
+    async def can_open_position(
             self, symbol: str, risk_params: BaseStrategy.RiskParameters
     ) -> bool:
         """Verifica si se puede abrir una nueva posición según los parámetros de riesgo."""
-        self.rest_client._sync_time_with_server()
+        # Extraer max_open_positions de dict u objeto
         try:
-            total_open_orders = len(self.rest_client.get_open_orders())
+            if isinstance(risk_params, dict):
+                max_open = int(risk_params.get('max_open_positions', 5))
+            else:
+                max_open = int(getattr(risk_params, 'max_open_positions', 5))
+        except Exception:
+            max_open = 5
+
+        # Si el rest_client provee método async, usarlo
+        try:
+            if hasattr(self.rest_client, 'async_get_open_orders'):
+                open_orders = await self.rest_client.async_get_open_orders(symbol=symbol)
+            else:
+                # Ejecutar en executor para no bloquear
+                loop = asyncio.get_running_loop()
+                open_orders = await loop.run_in_executor(None, self.rest_client.get_open_orders, symbol)
+
+            total_open_orders = len(open_orders or [])
             logger.info(f"📊 Órdenes abiertas actualmente: {total_open_orders}")
 
-            if total_open_orders >= risk_params.max_open_positions:
+            if total_open_orders >= max_open:
                 logger.warning(
-                    f"🚫 Límite de posiciones alcanzado ({total_open_orders}/{risk_params.max_open_positions})")
+                    f"🚫 Límite de posiciones alcanzado ({total_open_orders}/{max_open})")
                 return False
 
             return True
@@ -175,10 +191,99 @@ class PositionManager:
             logger.error(f"⚠️ Error verificando posiciones abiertas: {e}")
             return False
 
+    # Helper para recuperar precio con múltiples nombres soportados
+    async def _retrieve_price_async(self, symbol: str) -> Optional[float]:
+        """Intentar obtener precio usando la interfaz async o sync del cliente."""
+        try:
+            if hasattr(self.rest_client, 'async_get_current_price'):
+                return await self.rest_client.async_get_current_price(symbol)
+            if hasattr(self.rest_client, 'async_get_symbol_price'):
+                return await self.rest_client.async_get_symbol_price(symbol)
+
+            # fallback a sync en executor
+            loop = asyncio.get_running_loop()
+            if hasattr(self.rest_client, 'get_current_price'):
+                return await loop.run_in_executor(None, self.rest_client.get_current_price, symbol)
+            if hasattr(self.rest_client, 'get_symbol_price'):
+                return await loop.run_in_executor(None, self.rest_client.get_symbol_price, symbol)
+            # FakeRestClient compat (get_symbol_price)
+            if hasattr(self.rest_client, 'get_symbol_price'):
+                return await loop.run_in_executor(None, self.rest_client.get_symbol_price, symbol)
+        except Exception as e:
+            logger.error(f"Error obteniendo precio async: {e}")
+        return None
+
+    def _retrieve_price_sync(self, symbol: str) -> Optional[float]:
+        """Intentar obtener precio usando interfaz sync del cliente (para tests sync)."""
+        try:
+            if hasattr(self.rest_client, 'get_current_price'):
+                return self.rest_client.get_current_price(symbol)
+            if hasattr(self.rest_client, 'get_symbol_price'):
+                return self.rest_client.get_symbol_price(symbol)
+            if hasattr(self.rest_client, 'get_symbol_price'):
+                return self.rest_client.get_symbol_price(symbol)
+            # FakeRestClient method
+            if hasattr(self.rest_client, 'get_symbol_price'):
+                return self.rest_client.get_symbol_price(symbol)
+            # Some fakes expose get_symbol_price as lowercase
+            if hasattr(self.rest_client, 'get_symbol_price'):
+                return getattr(self.rest_client, 'get_symbol_price')(symbol)
+        except Exception as e:
+            logger.error(f"Error obteniendo precio sync: {e}")
+        return None
+
+    async def _retrieve_balance_async(self) -> float:
+        try:
+            if hasattr(self.rest_client, 'async_get_usdt_balance'):
+                return await self.rest_client.async_get_usdt_balance()
+
+            loop = asyncio.get_running_loop()
+            if hasattr(self.rest_client, 'get_usdt_balance'):
+                return await loop.run_in_executor(None, self.rest_client.get_usdt_balance)
+            if hasattr(self.rest_client, 'get_USDT_balance'):
+                # fake client returns dict
+                info = await loop.run_in_executor(None, self.rest_client.get_USDT_balance)
+                return float(info.get('free', 0))
+        except Exception as e:
+            logger.error(f"Error obteniendo balance async: {e}")
+        return 0.0
+
+    def _retrieve_balance_sync(self) -> float:
+        try:
+            if hasattr(self.rest_client, 'get_usdt_balance'):
+                return self.rest_client.get_usdt_balance()
+            if hasattr(self.rest_client, 'get_USDT_balance'):
+                info = self.rest_client.get_USDT_balance()
+                return float(info.get('free', 0))
+        except Exception as e:
+            logger.error(f"Error obteniendo balance sync: {e}")
+        return 0.0
+
+    # Mantener compatibilidad: wrapper sincrónico que ejecuta la versión async si no hay loop
     def build_market_order(self, signal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Wrapper síncrono para compatibilidad con tests y código existente.
+        Si hay un event loop en ejecución, devuelve la coroutine (llamar desde código async en ese caso).
         """
-        🔧 CORREGIDO: Construcción robusta de orden MARKET
-        - Ahora permite override absoluto con signal['position_size_usdt']
+        # Preferir get_running_loop para evitar DeprecationWarning en Python >=3.10
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None and loop.is_running():
+            # Si hay un loop corriendo, retornar la coroutine para que el caller la await
+            return self._build_market_order_async(signal)
+
+        # No hay loop en ejecución: crear un loop temporal para ejecutar la coroutine
+        new_loop = asyncio.new_event_loop()
+        try:
+            return new_loop.run_until_complete(self._build_market_order_async(signal))
+        finally:
+            new_loop.close()
+
+    async def _build_market_order_async(self, signal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Implementación asíncrona real de build_market_order (interna).
         """
         try:
             symbol = signal["symbol"].upper()
@@ -186,22 +291,30 @@ class PositionManager:
             risk_params = signal["risk_params"]
 
             # 1️⃣ Validar si se puede abrir posición
-            if not self.can_open_position(symbol, risk_params):
+            can_open = await self.can_open_position(symbol, risk_params)
+            if not can_open:
                 logger.warning("🚫 No se puede abrir posición (límite alcanzado)")
                 return None
 
             # 2️⃣ Obtener balance disponible
-            available_USDT_balance = self._get_available_USDT_balance()
+            try:
+                available_USDT_balance = await self._retrieve_balance_async()
+            except Exception as e:
+                logger.error(f"⚠️ Error obteniendo balance async: {e}")
+                available_USDT_balance = 0.0
+
             if available_USDT_balance <= 0:
                 logger.warning(f"🚫 Balance insuficiente: {available_USDT_balance:.2f} USDT")
                 return None
 
-            # 3️⃣ Calcular cantidad a invertir
-            # 🔧 CORREGIDO: get_symbol_price() → get_current_price()
-            actual_symbol_price = self.rest_client.get_current_price(symbol=symbol)
+            # 3️⃣ Calcular cantidad a invertir (precio)
+            try:
+                actual_symbol_price = await self._retrieve_price_async(symbol)
+            except Exception as e:
+                logger.error(f"❌ Error obteniendo precio de mercado para {symbol}: {e}")
+                return None
 
-            # 🔧 CORREGIDO: Protección contra division by zero
-            if actual_symbol_price <= 0:
+            if actual_symbol_price is None or actual_symbol_price <= 0:
                 logger.error(f"❌ Precio inválido para {symbol}: {actual_symbol_price}")
                 return None
 
@@ -214,7 +327,6 @@ class PositionManager:
                     logger.error("❌ position_size_usdt inválido en señal")
                     return None
             else:
-                # Extraer position_size de risk_params de forma segura
                 if isinstance(risk_params, dict):
                     pos_frac = risk_params.get('position_size', 0.1)
                 else:
@@ -260,7 +372,6 @@ class PositionManager:
                 )
                 return None
 
-            # 5️⃣ Armar orden
             order_params = {
                 "symbol": symbol,
                 "side": side,
@@ -268,7 +379,6 @@ class PositionManager:
                 "quantity": adjusted_quantity,
             }
 
-            # 6️⃣ Guardar en registro local
             self.open_positions[symbol] = {
                 "order_params": order_params,
                 "timestamp": time.time(),
@@ -281,19 +391,13 @@ class PositionManager:
 
             return order_params
 
-        except KeyError as e:
-            logger.error(f"⚠️ Clave faltante en la señal: {e}")
-            return None
-        except ZeroDivisionError as e:
-            logger.error(f"❌ Error de división por cero: {e}")
-            return None
         except Exception as e:
             logger.error(f"⚠️ Error construyendo orden: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             return None
 
-    def create_oco_orders(self, entry_response: dict, signal: Dict[str, Any]):
+    async def create_oco_orders(self, entry_response: dict, signal: Dict[str, Any]):
         """
         🔧 CORREGIDO: Crea órdenes OCO (TP + SL) con validación robusta
         """
@@ -338,15 +442,21 @@ class PositionManager:
                 # stopLimitPrice debe ser peor que stopPrice para garantizar ejecución
                 sl_limit = sl_price * (0.995 if side == "SELL" else 1.005)
 
-                resp = self.rest_client.create_order(
-                    symbol=symbol,
-                    side=side,
-                    type_="STOP_LOSS_LIMIT",
-                    quantity=executed_qty,
-                    price=sl_limit,
-                    time_in_force="GTC",
-                    stop_price=sl_price  # 🔧 AGREGADO: parámetro faltante
-                )
+                # usar versión async si está disponible
+                if hasattr(self.rest_client, 'async_create_order'):
+                    resp = await self.rest_client.async_create_order(
+                        symbol=symbol,
+                        side=side,
+                        type_="STOP_LOSS_LIMIT",
+                        quantity=executed_qty,
+                        price=sl_limit,
+                        time_in_force="GTC",
+                        stop_price=sl_price
+                    )
+                else:
+                    loop = asyncio.get_running_loop()
+                    resp = await loop.run_in_executor(None, self.rest_client.create_order,
+                                                      symbol, side, "STOP_LOSS_LIMIT", executed_qty)
 
                 if is_valid_binance_response(resp):
                     logger.info("✅ Stop-Limit creado")
@@ -358,14 +468,20 @@ class PositionManager:
             # Si solo TP existe, crear limit TP
             if tp_price is not None and sl_price is None:
                 logger.info("🔧 Creando TAKE-PROFIT LIMIT (sin SL)")
-                resp = self.rest_client.create_order(
-                    symbol=symbol,
-                    side=side,
-                    type_="LIMIT",
-                    quantity=executed_qty,
-                    price=tp_price,
-                    time_in_force="GTC",
-                )
+                if hasattr(self.rest_client, 'async_create_order'):
+                    resp = await self.rest_client.async_create_order(
+                        symbol=symbol,
+                        side=side,
+                        type_="LIMIT",
+                        quantity=executed_qty,
+                        price=tp_price,
+                        time_in_force="GTC",
+                    )
+                else:
+                    loop = asyncio.get_running_loop()
+                    resp = await loop.run_in_executor(None, self.rest_client.create_order,
+                                                      symbol, side, "LIMIT", executed_qty, tp_price)
+
                 if is_valid_binance_response(resp):
                     logger.info("✅ Take-Profit creado")
                     self.open_positions.setdefault(symbol, {})["take_profit"] = resp
@@ -377,15 +493,20 @@ class PositionManager:
             logger.info("🔧 Intentando crear OCO (TP + SL)")
             stop_limit_price = sl_price * (0.999 if side == "SELL" else 1.001)
 
-            oco_resp = self.rest_client.create_oco_order(
-                symbol=symbol,
-                side=side,
-                quantity=executed_qty,
-                take_profit_price=tp_price,
-                stop_price=sl_price,
-                stop_limit_price=stop_limit_price,
-                stop_limit_time_in_force="GTC",
-            )
+            if hasattr(self.rest_client, 'async_create_oco_order'):
+                oco_resp = await self.rest_client.async_create_oco_order(
+                    symbol=symbol,
+                    side=side,
+                    quantity=executed_qty,
+                    take_profit_price=tp_price,
+                    stop_price=sl_price,
+                    stop_limit_price=stop_limit_price,
+                    stop_limit_time_in_force="GTC",
+                )
+            else:
+                loop = asyncio.get_running_loop()
+                oco_resp = await loop.run_in_executor(None, self.rest_client.create_oco_order,
+                                                      symbol, side, executed_qty, tp_price, sl_price, stop_limit_price)
 
             if is_valid_binance_response(oco_resp) or (
                 isinstance(oco_resp, dict) and ("tp" in oco_resp or "sl" in oco_resp)

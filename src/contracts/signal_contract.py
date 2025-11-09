@@ -1,10 +1,9 @@
 # contracts/signal_contract.py
-from typing import TypedDict, Optional, Any, TYPE_CHECKING
-from datetime import datetime
+from typing import TypedDict, Optional, Any
+from datetime import datetime, timezone
+from utils.logger import Logger
 
-if TYPE_CHECKING:
-    # Solo para checking de tipos en tiempo de desarrollo; evita import runtime y circularidad
-    from strategies.BaseStrategy import BaseStrategy
+logger = Logger.get_logger(__name__)
 
 
 class SignalContract(TypedDict):
@@ -122,12 +121,12 @@ class ValidatedSignal:
             normalized_signal['position_size_usdt'] = float(normalized_signal['position_size_usdt'])
 
         # Agregar meta-datos automáticamente
-        normalized_signal.setdefault('received_at', datetime.utcnow().isoformat())
+        normalized_signal.setdefault('received_at', datetime.now(timezone.utc).isoformat())
 
         return SignalContract(**normalized_signal)
 
     @staticmethod
-    def create_safe_signal(signal_data: dict) -> SignalContract:
+    def create_safe_signal(signal_data: dict) -> Optional[SignalContract]:
         """
         Crea una señal válida con manejo de errores.
         Retorna una señal normalizada o None si es inválida.
@@ -135,8 +134,8 @@ class ValidatedSignal:
         try:
             return ValidatedSignal.validate(signal_data)
         except (ValueError, TypeError) as e:
-            print(f"⚠️ Señal inválida descartada: {e}")
-            print(f"📋 Datos recibidos: {signal_data}")
+            logger.warning(f"⚠️ Señal inválida descartada: {e}")
+            logger.debug(f"📋 Datos recibidos: {signal_data}")
             return None
 
 
@@ -152,4 +151,3 @@ class DailyOpenSignalContract(SignalContract):
     position_size_usdt: float  # Obligatorio en esta estrategia
     timestamp: str
     reason: str
-

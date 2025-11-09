@@ -20,7 +20,7 @@ class BTC_RSI_Strategy(BaseStrategy):
     """
 
     def __init__(
-        self, signal_queue: asyncio.Queue, bot_id: int, run_db_id: int | None = None, rsi_period=14, overbought=70, oversold=30
+        self, signal_queue: asyncio.Queue, bot_id: int, run_db_id: int | None = None, rsi_period=14, overbought=70, oversold=30, rest_client: BinanceRESTClient | None = None
     ):
         """
         :param signal_queue: cola asíncrona para enviar señales
@@ -37,16 +37,19 @@ class BTC_RSI_Strategy(BaseStrategy):
         self.overbought = overbought
         self.oversold = oversold
         self.candles: dict[str, pd.DataFrame] = {}
-        self.rest_client = BinanceRESTClient(testnet=True)
+        self.rest_client = rest_client or BinanceRESTClient(testnet=True)
 
     # =====================================================
     # 🔹 CARGA INICIAL
     # =====================================================
-    def _request_for_init(self, symbols: list[str]):
+    async def _request_for_init(self, symbols: list[str]):
         """Solicita datos históricos iniciales para los símbolos."""
-        response = self.rest_client.get_all_klines(
-            list_symbols=symbols, interval="1m", limit=30
-        )
+        # usar versión async del cliente si existe
+        if hasattr(self.rest_client, 'async_get_all_klines'):
+            response = await self.rest_client.async_get_all_klines(list_symbols=symbols, interval="1m", limit=30)
+        else:
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, self.rest_client.get_all_klines, symbols, "1m", 30)
 
         for symbol, data in response.items():
             df = pd.DataFrame(data)
@@ -199,7 +202,7 @@ class BTC_RSI_Strategy(BaseStrategy):
     # =====================================================
     async def start(self, symbols: list[str]):
         """Inicia la estrategia con datos históricos y actualizaciones en tiempo real."""
-        self._request_for_init(symbols=symbols)
+        await self._request_for_init(symbols=symbols)
 
         for symbol, df in self.candles.items():
             logger.info(f"Ultimas 3 velas de {symbol}:\n{df.tail(3)}")

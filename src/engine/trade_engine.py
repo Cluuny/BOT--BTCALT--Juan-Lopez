@@ -52,11 +52,12 @@ class TradeEngine:
     🔧 VERSIÓN CORREGIDA: Validación robusta de respuestas de Binance
     """
 
-    def __init__(self, signal_queue: asyncio.Queue, bot_id: int, run_db_id: int | None = None):
+    def __init__(self, signal_queue: asyncio.Queue, bot_id: int, run_db_id: int | None = None, rest_client: BinanceRESTClient | None = None):
         self.signal_queue = signal_queue
         self.bot_id = bot_id
         self.run_db_id = run_db_id
-        self.rest_client = BinanceRESTClient(testnet=False)
+        # permitir inyección de rest_client para tests
+        self.rest_client = rest_client or BinanceRESTClient(testnet=False)
         self.position_manager = PositionManager(rest_client=self.rest_client)
         self.order = None
 
@@ -66,7 +67,7 @@ class TradeEngine:
 
         # 🟠 IMPORTANTE: sincronizar órdenes abiertas y estado en startup
         try:
-            self._sync_open_orders_on_startup()
+            await self._sync_open_orders_on_startup()
         except Exception as e:
             logger.warning(f"⚠️ No se pudo sincronizar órdenes al startup: {e}")
 
@@ -88,12 +89,18 @@ class TradeEngine:
             await self.handle_signal(validated_signal)
             self.signal_queue.task_done()
 
-    def _sync_open_orders_on_startup(self):
+    async def _sync_open_orders_on_startup(self):
         """
         Sincroniza órdenes abiertas desde Binance y las registra en PositionManager.open_positions.
         """
         try:
-            open_orders = self.rest_client.get_open_orders()
+            # usar versión async si está disponible
+            if hasattr(self.rest_client, 'async_get_open_orders'):
+                open_orders = await self.rest_client.async_get_open_orders()
+            else:
+                loop = asyncio.get_running_loop()
+                open_orders = await loop.run_in_executor(None, self.rest_client.get_open_orders)
+
             logger.info(f"🔁 Sincronizando {len(open_orders)} órdenes abiertas desde exchange")
             for o in open_orders:
                 symbol = o.get("symbol")
@@ -128,7 +135,13 @@ class TradeEngine:
 
             # 🔎 Validar desviación de precio entre señal y mercado
             try:
-                market_price = self.rest_client.get_current_price(symbol)
+                # usar método async preferentemente
+                if hasattr(self.rest_client, 'async_get_current_price'):
+                    market_price = await self.rest_client.async_get_current_price(symbol)
+                else:
+                    loop = asyncio.get_running_loop()
+                    market_price = await loop.run_in_executor(None, self.rest_client.get_current_price, symbol)
+
                 max_dev = None
                 # intentar leer umbral desde risk_params
                 if isinstance(risk_params, dict):
@@ -161,7 +174,7 @@ class TradeEngine:
             logger.error(f"❌ Error inesperado en handle_signal: {e}")
             logger.error(f"📋 Traceback: {traceback.format_exc()}")
 
-    def _persist_order_and_fills(self, request_payload: dict, response: dict,
+    async def _persist_order_and_fills(self, request_payload: dict, response: dict,
                                  symbol: str, side: str, order_type: str, quantity: float):
         """
         🔧 CORREGIDO: Persistencia con validación de respuesta
@@ -302,7 +315,12 @@ class TradeEngine:
             # Snapshot de balance si orden completamente FILLED
             if final_status == "FILLED":
                 try:
-                    acct = self.rest_client.get_account_info()
+                    # usar versión async si está disponible
+                    if hasattr(self.rest_client, 'async_get_account_info'):
+                        acct = await self.rest_client.async_get_account_info()
+                    else:
+                        loop = asyncio.get_running_loop()
+                        acct = await loop.run_in_executor(None, self.rest_client.get_account_info)
 
                     # Resumen de cuenta
                     try:
@@ -357,7 +375,8 @@ class TradeEngine:
                 f"Estrategia: {strategy_name} | Razón: {reason}"
             )
 
-            self.order = self.position_manager.build_market_order(signal=signal)
+            # build_market_order es ahora async
+            self.order = await self.position_manager.build_market_order(signal=signal)
 
             if self.order is None:
                 logger.warning("⚠️ No se pudo construir orden de compra")
@@ -365,13 +384,18 @@ class TradeEngine:
 
             logger.info(f"📦 Ejecutando orden: {self.order}")
 
-            # Ejecutar orden
-            response = self.rest_client.create_order(
-                symbol=self.order['symbol'],
-                side=self.order['side'],
-                type_=self.order['type'],
-                quantity=self.order['quantity'],
-            )
+            # Ejecutar orden (usar async si disponible)
+            if hasattr(self.rest_client, 'async_create_order'):
+                response = await self.rest_client.async_create_order(
+                    symbol=self.order['symbol'],
+                    side=self.order['side'],
+                    type_=self.order['type'],
+                    quantity=self.order['quantity'],
+                )
+            else:
+                loop = asyncio.get_running_loop()
+                response = await loop.run_in_executor(None, self.rest_client.create_order,
+                                                      self.order['symbol'], self.order['side'], self.order['type'], self.order['quantity'])
 
             # Validar respuesta antes de persistir
             if response is None:
@@ -387,7 +411,7 @@ class TradeEngine:
                     logger.error(f"📋 Respuesta: {response}")
 
             # Persistir siempre (éxito o error)
-            self._persist_order_and_fills(
+            await self._persist_order_and_fills(
                 request_payload={
                     "symbol": self.order['symbol'],
                     "side": self.order['side'],
@@ -404,7 +428,7 @@ class TradeEngine:
             # 🟠 Si la orden fue exitosa, intentar crear OCOs (TP/SL) según la señal
             if is_valid and response is not None:
                 try:
-                    self.position_manager.create_oco_orders(response, signal)
+                    await self.position_manager.create_oco_orders(response, signal)
                 except Exception as e:
                     logger.warning(f"⚠️ No se pudo crear OCO tras entrada: {e}")
 
@@ -429,7 +453,7 @@ class TradeEngine:
                 f"Estrategia: {strategy_name} | Razón: {reason}"
             )
 
-            self.order = self.position_manager.build_market_order(signal=signal)
+            self.order = await self.position_manager.build_market_order(signal=signal)
 
             if self.order is None:
                 logger.warning("⚠️ No se pudo construir orden de venta")
@@ -438,12 +462,17 @@ class TradeEngine:
             logger.info(f"📦 Ejecutando orden: {self.order}")
 
             # Ejecutar orden
-            response = self.rest_client.create_order(
-                symbol=self.order['symbol'],
-                side=self.order['side'],
-                type_=self.order['type'],
-                quantity=self.order['quantity'],
-            )
+            if hasattr(self.rest_client, 'async_create_order'):
+                response = await self.rest_client.async_create_order(
+                    symbol=self.order['symbol'],
+                    side=self.order['side'],
+                    type_=self.order['type'],
+                    quantity=self.order['quantity'],
+                )
+            else:
+                loop = asyncio.get_running_loop()
+                response = await loop.run_in_executor(None, self.rest_client.create_order,
+                                                      self.order['symbol'], self.order['side'], self.order['type'], self.order['quantity'])
 
             # Validar respuesta
             if response is None:
@@ -457,7 +486,7 @@ class TradeEngine:
                     logger.error(f"❌ Orden rechazada por Binance")
 
             # Persistir
-            self._persist_order_and_fills(
+            await self._persist_order_and_fills(
                 request_payload={
                     "symbol": self.order['symbol'],
                     "side": self.order['side'],
@@ -474,11 +503,10 @@ class TradeEngine:
             # 🟠 Intentar crear OCO tras venta si corresponde
             if is_valid and response is not None:
                 try:
-                    self.position_manager.create_oco_orders(response, signal)
+                    await self.position_manager.create_oco_orders(response, signal)
                 except Exception as e:
                     logger.warning(f"⚠️ No se pudo crear OCO tras entrada: {e}")
 
         except Exception as e:
             logger.error(f"❌ Error en _handle_sell: {e}")
             logger.error(f"📋 Traceback: {traceback.format_exc()}")
-

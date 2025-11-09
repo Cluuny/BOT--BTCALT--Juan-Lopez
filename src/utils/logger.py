@@ -1,5 +1,6 @@
 import logging
 import sys
+import os
 
 # Opcional: color para consola
 class LogColors:
@@ -35,21 +36,33 @@ class Logger:
         root_logger.setLevel(logging.INFO)
         root_logger.addHandler(console_handler)
 
+        # Añadir filtro de coloreado solo una vez y si el terminal soporta ANSI o se dispone colorama
+        try:
+            # En Windows, inicializar colorama si está instalada
+            if os.name == 'nt':
+                try:
+                    import colorama
+                    colorama.init()
+                except Exception:
+                    pass
+
+            def colorize_log(record):
+                msg = record.getMessage()
+                if record.levelno == logging.INFO:
+                    msg = f"{LogColors.GREEN}{msg}{LogColors.RESET}"
+                elif record.levelno == logging.WARNING:
+                    msg = f"{LogColors.YELLOW}{msg}{LogColors.RESET}"
+                elif record.levelno == logging.ERROR:
+                    msg = f"{LogColors.RED}{msg}{LogColors.RESET}"
+                elif record.levelno == logging.DEBUG:
+                    msg = f"{LogColors.BLUE}{msg}{LogColors.RESET}"
+                record.msg = msg
+                return True
+
+            # Añadir filtro al logger raíz
+            root_logger.addFilter(colorize_log)
+        except Exception:
+            # Si algo falla, no detener la aplicación por colores
+            pass
+
         Logger._configured = True
-
-# Colores por nivel (opcional)
-def colorize_log(record):
-    msg = record.getMessage()
-    if record.levelno == logging.INFO:
-        msg = f"{LogColors.GREEN}{msg}{LogColors.RESET}"
-    elif record.levelno == logging.WARNING:
-        msg = f"{LogColors.YELLOW}{msg}{LogColors.RESET}"
-    elif record.levelno == logging.ERROR:
-        msg = f"{LogColors.RED}{msg}{LogColors.RESET}"
-    elif record.levelno == logging.DEBUG:
-        msg = f"{LogColors.BLUE}{msg}{LogColors.RESET}"
-    record.msg = msg
-    return True
-
-# Hook para aplicar colores automáticamente
-logging.getLogger().addFilter(colorize_log)
