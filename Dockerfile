@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # Metadata
-LABEL maintainer="tu-email@ejemplo.com"
+LABEL maintainer="vistrent834@gmail.com"
 LABEL version="1.0"
 
 WORKDIR /src
@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y \
 COPY requirements-prod.txt ./
 
 # 3. Instalar dependencias Python
-RUN pip install --no-cache-dir -r requirements-prod.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 4. Copiar código fuente (sin .env)
 COPY src/ ./src/
