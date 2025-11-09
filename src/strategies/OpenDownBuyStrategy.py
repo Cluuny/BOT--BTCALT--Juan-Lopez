@@ -55,7 +55,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
 
     def _request_for_init(self, symbols: list[str]):
         try:
-            logger.info(f"🔍 Solicitando datos diarios para {self.symbol}...")
+            logger.info(f"Solicitando datos diarios para {self.symbol}...")
 
             # Obtener velas diarias (usar async si disponible)
             if hasattr(self.rest_client, 'async_get_all_klines'):
@@ -85,14 +85,14 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
             logger.debug(f"Respuesta de API recibida: {response}")
 
             if self.symbol not in response or len(response[self.symbol]) == 0:
-                logger.error(f"❌ No se encontraron datos diarios para {self.symbol}")
+                logger.error(f"No se encontraron datos diarios para {self.symbol}")
                 self._fallback_to_ticker_price()
                 return
 
             daily_candles = response[self.symbol]
             last_daily = daily_candles[-1]
 
-            # 🔧 CORREGIDO: Validación explícita de tipo
+            # CORREGIDO: Validación explícita de tipo
             open_price = None
             open_timestamp = None
 
@@ -131,12 +131,12 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
 
             # Validar resultados
             if open_price is None or open_price <= 0:
-                logger.error(f"❌ Precio de apertura inválido: {open_price}")
+                logger.error(f"Precio de apertura inválido: {open_price}")
                 self._fallback_to_ticker_price()
                 return
 
             if open_timestamp is None:
-                logger.warning("⚠️ Timestamp no disponible, usando hora actual")
+                logger.warning("Timestamp no disponible, usando hora actual")
                 open_timestamp = datetime.now(timezone.utc).timestamp()
 
             # Asignar valores validados
@@ -146,25 +146,29 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
             )
             self.last_open_check_date = self.daily_open_time.date()
 
-            logger.info(
-                f"✅ Precio de apertura diario cargado: {self.daily_open_price:.2f} "
-                f"({self.daily_open_time.strftime('%Y-%m-%d %H:%M UTC')})"
-            )
+            logger.info("=" * 60)
+            logger.info(f"PRECIO DE APERTURA DIARIO CARGADO (ULTIMO DISPONIBLE)")
+            logger.info(f"   Precio: {self.daily_open_price:.2f} USDT")
+            logger.info(f"   Fecha/Hora: {self.daily_open_time.strftime('%Y-%m-%d %H:%M UTC')}")
+            logger.info(f"   Dia: {self.last_open_check_date}")
+            logger.info(f"   La estrategia comenzara a generar senales INMEDIATAMENTE")
+            logger.info(f"   NO espera a la proxima medianoche")
+            logger.info("=" * 60)
 
             self._check_existing_position()
 
         except Exception as e:
-            logger.error(f"❌ Error crítico cargando precio de apertura: {str(e)}")
+            logger.error(f"Error critico cargando precio de apertura: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             self._fallback_to_ticker_price()
 
     def _fallback_to_ticker_price(self):
         """
-        🔧 CORREGIDO: Fallback simplificado y robusto
+        CORREGIDO: Fallback simplificado y robusto
         Usa ticker directo de Binance (más confiable que klines)
         """
         try:
-            logger.info("🔄 Ejecutando fallback con ticker de Binance...")
+            logger.info("Ejecutando fallback con ticker de Binance...")
 
             # Usar método directo del cliente Binance
             ticker = self.rest_client.client.get_symbol_ticker(symbol=self.symbol)
@@ -178,13 +182,13 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
             self.last_open_check_date = self.daily_open_time.date()
 
             logger.info(
-                f"✅ Fallback exitoso - Usando precio ticker: {current_price:.2f}"
+                f"Fallback exitoso - Usando precio ticker: {current_price:.2f}"
             )
 
         except Exception as e:
-            logger.critical(f"💥 FALLBACK CRÍTICO FALLÓ: {e}")
+            logger.critical(f"FALLBACK CRITICO FALLO: {e}")
             logger.critical(
-                "🚨 No se puede iniciar estrategia sin precio de referencia"
+                "No se puede iniciar estrategia sin precio de referencia"
             )
             raise RuntimeError(
                 f"No se pudo obtener precio inicial para {self.symbol}. "
@@ -199,22 +203,29 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
 
     async def _handle_update(self, last_candles: dict):
         if self.symbol not in last_candles:
+            logger.warning(f"Simbolo {self.symbol} no encontrado en datos recibidos")
             return
 
         try:
             kline = last_candles[self.symbol]
 
+            # LOG: Datos crudos recibidos del WebSocket
+            logger.info(f"WebSocket - Datos recibidos para {self.symbol}: {kline}")
+
             close_price = self._extract_close_price(kline)
             if close_price is None or close_price <= 0:
-                logger.warning(f"⚠️ Precio de cierre inválido: {close_price}")
+                logger.warning(f"Precio de cierre invalido: {close_price}")
                 return
 
             self.current_price = close_price
             current_time = datetime.now(timezone.utc)
 
+            # LOG: Precio extraído
+            logger.info(f"Precio actual extraido: {close_price:.2f} USDT @ {current_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+
             # Validar que tenemos precio de apertura
             if self.daily_open_price is None or self.daily_open_price <= 0:
-                logger.warning("⚠️ Precio de apertura no disponible, reinicializando...")
+                logger.warning("Precio de apertura no disponible, reinicializando...")
                 self.daily_open_price = close_price
                 self.daily_open_time = current_time
                 self.last_open_check_date = current_time.date()
@@ -228,10 +239,12 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
                 (close_price - self.daily_open_price) / self.daily_open_price
             ) * 100
 
-            logger.debug(
-                f"📊 {self.symbol} | Precio: {close_price:.2f} | "
-                f"Apertura: {self.daily_open_price:.2f} | "
-                f"Cambio: {price_change_pct:.2f}%"
+            # LOG: Métricas calculadas (nivel INFO para visibilidad permanente)
+            logger.info(
+                f"{self.symbol} | Precio: {close_price:.2f} | "
+                f"Apertura Diaria: {self.daily_open_price:.2f} | "
+                f"Cambio: {price_change_pct:+.2f}% | "
+                f"Posicion: {'ABIERTA' if self.position_open else 'CERRADA'}"
             )
 
             # Lógica de trading
@@ -246,7 +259,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
                 await self._notify_pnl(close_price, current_time)
 
         except Exception as e:
-            logger.error(f"⚠️ Error procesando actualización: {e}")
+            logger.error(f"Error procesando actualizacion: {e}")
             logger.error(f"Traceback: {traceback.format_exc()}")
 
     def _extract_close_price(self, kline_data):
@@ -270,21 +283,21 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
                             continue
 
                 logger.warning(
-                    f"⚠️ No se encontró precio de cierre en dict: {kline_data.keys()}"
+                    f"No se encontro precio de cierre en dict: {kline_data.keys()}"
                 )
                 return None
 
             else:
-                logger.warning(f"⚠️ Formato kline no reconocido: {type(kline_data)}")
+                logger.warning(f"Formato kline no reconocido: {type(kline_data)}")
                 return None
 
         except Exception as e:
-            logger.error(f"❌ Error extrayendo precio de cierre: {e}")
+            logger.error(f"Error extrayendo precio de cierre: {e}")
             return None
 
     async def _check_and_update_daily_open(self, current_time: datetime):
         """
-        🔧 CORREGIDO: Actualización de apertura con validaciones
+        CORREGIDO: Actualización de apertura con validaciones
         """
         try:
             current_date = current_time.date()
@@ -298,7 +311,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
                 return
 
             logger.info(
-                f"🔄 Nuevo día detectado ({current_date}). Actualizando precio de apertura..."
+                f"Nuevo dia detectado ({current_date}). Actualizando precio de apertura..."
             )
 
             # usar async si está disponible
@@ -309,7 +322,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
                 response = await loop.run_in_executor(None, self.rest_client.get_all_klines, [self.symbol], "1d", 1)
 
             if self.symbol not in response or len(response[self.symbol]) == 0:
-                logger.error("❌ No se pudo obtener nueva apertura diaria")
+                logger.error("No se pudo obtener nueva apertura diaria")
                 self.last_open_check_date = current_date
                 return
 
@@ -350,15 +363,15 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
                     self.daily_open_time = new_open_time
 
                     logger.info(
-                        f"✅ Apertura actualizada: {old_open:.2f} → {new_open_price:.2f}"
+                        f"Apertura actualizada: {old_open:.2f} → {new_open_price:.2f}"
                     )
                 else:
-                    logger.warning("⚠️ Apertura obtenida no corresponde al día actual")
+                    logger.warning("Apertura obtenida no corresponde al día actual")
 
             self.last_open_check_date = current_date
 
         except Exception as e:
-            logger.error(f"❌ Error actualizando apertura diaria: {e}")
+            logger.error(f"Error actualizando apertura diaria: {e}")
             self.last_open_check_date = current_time.date()
 
     async def _check_entry_condition(
@@ -367,7 +380,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
         """Verificar condición de entrada."""
         if change_pct <= self.entry_threshold:
             logger.info(
-                f"🎯 Condición de ENTRADA: {change_pct:.2f}% <= {self.entry_threshold}%"
+                f"Condicion de ENTRADA: {change_pct:.2f}% <= {self.entry_threshold}%"
             )
 
             position_size_usdt = self.base_capital * (
@@ -387,7 +400,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
             self.entry_time = current_time
 
             logger.info(
-                f"💰 Posición abierta: {position_size_usdt:.2f} USDT @ {price:.2f}"
+                f"Posicion abierta: {position_size_usdt:.2f} USDT @ {price:.2f}"
             )
 
     async def _check_exit_condition(
@@ -403,7 +416,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
 
         if change_from_open_pct >= self.exit_threshold:
             logger.info(
-                f"🎯 Condición de SALIDA: {change_from_open_pct:.2f}% >= {self.exit_threshold}%"
+                f"Condicion de SALIDA: {change_from_open_pct:.2f}% >= {self.exit_threshold}%"
             )
 
             if self.entry_price and self.entry_price > 0:
@@ -426,7 +439,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
             self.entry_time = None
 
             logger.info(
-                f"🔒 Posición cerrada: PnL {pnl_pct:.2f}% ({pnl_usdt:.2f} USDT)"
+                f"Posicion cerrada: PnL {pnl_pct:.2f}% ({pnl_usdt:.2f} USDT)"
             )
 
     async def _notify_pnl(self, current_price: float, current_time: datetime):
@@ -446,7 +459,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
             ) * 100
 
             logger.info(
-                f"📈 PnL: {pnl_pct:.2f}% ({pnl_usdt:.2f} USDT) | "
+                f"PnL: {pnl_pct:.2f}% ({pnl_usdt:.2f} USDT) | "
                 f"Cambio desde apertura: {change_from_open_pct:.2f}% (meta: {self.exit_threshold}%)"
             )
 
@@ -464,7 +477,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
 
         # Validación previa
         if position_size_usdt <= 0:
-            logger.error(f"❌ Tamaño de posición inválido: {position_size_usdt}")
+            logger.error(f"Tamaño de posición inválido: {position_size_usdt}")
             return
 
         signal_data = {
@@ -481,7 +494,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
         validated_signal = ValidatedSignal.create_safe_signal(signal_data)
 
         if validated_signal is None:
-            logger.error("❌ Señal inválida descartada")
+            logger.error("Señal inválida descartada")
             return
 
         # Persistir
@@ -519,7 +532,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
             logger.error(f"Error persistiendo señal: {e}")
 
         await self.signal_queue.put(validated_signal)
-        logger.info(f"📨 Señal emitida: {signal_type} {self.symbol} @ {price:.2f}")
+        logger.info(f"Señal emitida: {signal_type} {self.symbol} @ {price:.2f}")
 
     class RiskParameters(BaseStrategy.RiskParameters):
         def __init__(self):
@@ -532,7 +545,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
         # _request_for_init puede ser sync o usar run_until_complete internamente
         self._request_for_init(symbols=[self.symbol])
 
-        logger.info(f"🚀 Estrategia BTC_Daily_Open iniciada")
+        logger.info(f"Estrategia BTC_Daily_Open iniciada")
         logger.info(f"   - Apertura: {self.daily_open_price:.2f}")
         logger.info(f"   - Entrada: {self.entry_threshold}%")
         logger.info(f"   - Salida: {self.exit_threshold}%")
