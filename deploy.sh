@@ -10,8 +10,8 @@ NC='\033[0m' # No Color
 echo -e "${GREEN}Iniciando deployment en GCP...${NC}"
 
 # 1. Verificar que estamos en el directorio correcto
-if [ ! -f "docker compose.prod.yml" ]; then
-    echo -e "${RED}Error: docker compose.prod.yml no encontrado${NC}"
+if [ ! -f "docker-compose.prod.yml" ]; then
+    echo -e "${RED}Error: docker-compose.prod.yml no encontrado${NC}"
     exit 1
 fi
 
@@ -43,11 +43,11 @@ docker pull python:3.12-slim
 
 # 6. Build de la imagen del bot
 echo -e "${YELLOW}Construyendo imagen del bot...${NC}"
-docker compose -f docker compose.prod.yml build --no-cache
+docker compose -f docker-compose.prod.yml build --no-cache
 
 # 7. Detener servicios antiguos si existen
 echo -e "${YELLOW}Deteniendo servicios antiguos...${NC}"
-docker compose -f docker compose.prod.yml down || true
+docker compose -f docker-compose.prod.yml down || true
 
 # 8. Limpiar contenedores huérfanos y volúmenes no usados
 echo -e "${YELLOW}Limpiando recursos no usados...${NC}"
@@ -56,7 +56,7 @@ docker volume prune -f
 
 # 9. Iniciar servicios
 echo -e "${YELLOW}Iniciando servicios...${NC}"
-docker compose -f docker compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml up -d
 
 # 10. Esperar a que los servicios estén healthy
 echo -e "${YELLOW}Esperando a que los servicios estén listos...${NC}"
@@ -64,18 +64,18 @@ sleep 10
 
 # 11. Verificar estado de los servicios
 echo -e "${YELLOW}Verificando estado de servicios...${NC}"
-docker compose -f docker compose.prod.yml ps
+docker compose -f docker-compose.prod.yml ps
 
 # 12. Mostrar logs iniciales
 echo -e "${GREEN}Deployment completado!${NC}"
 echo -e "${YELLOW}Logs iniciales:${NC}"
-docker compose -f docker compose.prod.yml logs --tail=50
+docker compose -f docker-compose.prod.yml logs --tail=50
 
 # 13. Comandos útiles
 echo -e "\n${GREEN}📋 Comandos útiles:${NC}"
-echo "  Ver logs:     docker compose -f docker compose.prod.yml logs -f"
-echo "  Detener:      docker compose -f docker compose.prod.yml down"
-echo "  Reiniciar:    docker compose -f docker compose.prod.yml restart"
-echo "  Estado:       docker compose -f docker compose.prod.yml ps"
+echo "  Ver logs:     docker compose -f docker-compose.prod.yml logs -f"
+echo "  Detener:      docker compose -f docker-compose.prod.yml down"
+echo "  Reiniciar:    docker compose -f docker-compose.prod.yml restart"
+echo "  Estado:       docker compose -f docker-compose.prod.yml ps"
 echo "  Shell bot:    docker exec -it trading_bot /bin/bash"
 echo "  Shell DB:     docker exec -it trading_postgres_db psql -U \$(cat secrets/db_user.txt) trading_bot"
