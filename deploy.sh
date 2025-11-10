@@ -125,6 +125,7 @@ echo -e "\n${GREEN}📊 Información del Deployment:${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "Base de datos: ${DB_NAME:-trading_bot}"
 echo -e "Usuario DB:    ${POSTGRES_USER:-trading_user}"
+echo -e "Usuario DB:    ${POSTGRES_PASSWORD:-trading_pass}"
 echo -e "Modo:          ${MODE:-REAL}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
