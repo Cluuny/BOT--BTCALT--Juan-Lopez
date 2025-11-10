@@ -40,7 +40,9 @@ class Settings:
     DB_PORT = os.getenv("DB_PORT", "5432")
     DB_NAME = os.getenv("DB_NAME", "trading_bot")
     DB_USER = os.getenv("DB_USER", "trading_user")
-    DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
+    DB_PASSWORD = os.getenv("DB_PASSWORD", "trading_pass")
+
+    print(DB_PASSWORD)
 
     @property
     def DATABASE_URL(self):
