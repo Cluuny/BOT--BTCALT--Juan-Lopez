@@ -1,15 +1,17 @@
 services:
   postgres:
-    image: postgres:16-alpine  # Alpine para menor tamaño
+    image: postgres:16-alpine
     container_name: trading_postgres_db
     restart: unless-stopped
 
-    # Variables de entorno (se leen de secrets en runtime)
+    # Variables de entorno directas (más confiable que secrets para postgres)
     environment:
-      POSTGRES_USER: trading_user
+      POSTGRES_USER: ${POSTGRES_USER:-trading_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trading_pass}
       POSTGRES_DB: ${DB_NAME:-trading_bot}
       POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+      # Configuración adicional para mejor arranque
+      PGDATA: /var/lib/postgresql/data/pgdata
 
     # Recursos limitados
     deploy:
@@ -30,26 +32,28 @@ services:
       - "max_connections=50"
       - "-c"
       - "work_mem=4MB"
+      - "-c"
+      - "log_statement=all"
+      - "-c"
+      - "log_destination=stderr"
 
     ports:
-      - "127.0.0.1:5432:5432"  # Solo localhost
+      - "127.0.0.1:5432:5432"
 
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./postgres-init:/docker-entrypoint-initdb.d  # Scripts de inicialización
-
-    secrets:
-      - db_user
-      - db_password
+      - ./init-scripts:/docker-entrypoint-initdb.d:ro
 
     networks:
       - trading_network
 
+    # Healthcheck corregido
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trading_user} -d ${DB_NAME:-trading_bot}"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
 
   trading-bot:
     build:
@@ -62,21 +66,23 @@ services:
       postgres:
         condition: service_healthy
 
-    # Variables de entorno desde secrets
     environment:
       # Base de datos
       POSTGRES_HOST: postgres
       POSTGRES_DB: ${DB_NAME:-trading_bot}
       POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-trading_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trading_pass}
 
-      # Binance (desde secrets)
+      # Binance
       MODE: ${MODE:-REAL}
+      BINANCE_API_KEY: ${BINANCE_API_KEY}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET}
 
       # Python optimizations
       PYTHONUNBUFFERED: 1
       PYTHONOPTIMIZE: 1
 
-    # Recursos limitados
     deploy:
       resources:
         limits:
@@ -86,20 +92,12 @@ services:
           cpus: '0.5'
           memory: 512M
 
-    secrets:
-      - api_key
-      - api_secret
-      - db_user
-      - db_password
-
     volumes:
-      # Solo logs persistentes
       - ./logs:/src/logs:rw
 
     networks:
       - trading_network
 
-    # Logging limitado para ahorrar espacio
     logging:
       driver: "json-file"
       options:
@@ -112,17 +110,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-
-# 🔒 Secrets (archivos en servidor)
-secrets:
-  api_key:
-    file: ./secrets/api_key.txt
-  api_secret:
-    file: ./secrets/api_secret.txt
-  db_user:
-    file: ./secrets/db_user.txt
-  db_password:
-    file: ./secrets/db_password.txt
 
 volumes:
   postgres_data:

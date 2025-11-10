@@ -27,10 +27,12 @@ read -p "Binance API Key: " BINANCE_API_KEY
 read -sp "Binance API Secret: " BINANCE_API_SECRET
 echo
 
+# PostgreSQL configuración
+POSTGRES_USER="trading_user"
 read -p "PostgreSQL Password (dejar vacío para generar): " POSTGRES_PASSWORD
 if [ -z "$POSTGRES_PASSWORD" ]; then
     POSTGRES_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
-    echo "✅ Password generado automáticamente"
+    echo "✅ Password generado automáticamente: ${POSTGRES_PASSWORD}"
 fi
 
 read -p "Nombre de la base de datos [trading_bot]: " DB_NAME
@@ -49,6 +51,7 @@ BINANCE_API_KEY=${BINANCE_API_KEY}
 BINANCE_API_SECRET=${BINANCE_API_SECRET}
 
 # Database
+POSTGRES_USER=${POSTGRES_USER}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 DB_NAME=${DB_NAME}
 
@@ -59,10 +62,35 @@ EOF
 # Asegurar permisos
 chmod 600 .env.production
 
-echo -e "\n${GREEN}✅ Archivo .env.production creado exitosamente${NC}"
+# Crear directorio para scripts de inicialización
+mkdir -p init-scripts
+
+# Crear script de inicialización de base de datos
+cat > init-scripts/01-init-db.sql << EOF
+-- Script de inicialización de base de datos
+-- Se ejecuta automáticamente al crear el contenedor por primera vez
+
+-- Verificar que la base de datos existe
+SELECT 'Base de datos creada correctamente' as status;
+
+-- Crear extensiones útiles si es necesario
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Log de inicialización
+DO \$\$
+BEGIN
+    RAISE NOTICE 'Base de datos trading_bot inicializada exitosamente';
+END \$\$;
+EOF
+
+chmod +x init-scripts/01-init-db.sql
+
+echo -e "\n${GREEN}✅ Configuración completada exitosamente${NC}"
 echo -e "${YELLOW}📋 Configuración guardada:${NC}"
+echo "  - Usuario DB: ${POSTGRES_USER}"
 echo "  - Base de datos: ${DB_NAME}"
 echo "  - Modo: ${MODE}"
 echo "  - Password DB: ${POSTGRES_PASSWORD}"
-echo -e "\n${RED}⚠️  IMPORTANTE: Este archivo contiene información sensible${NC}"
-echo "   No lo compartas ni lo subas a Git"
+echo -e "\n${GREEN}✅ Script de inicialización DB creado en init-scripts/${NC}"
+echo -e "\n${RED}⚠️  IMPORTANTE: Guarda estas credenciales de forma segura${NC}"
+echo "   No compartas ni subas .env.production a Git"
