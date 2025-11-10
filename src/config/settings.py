@@ -20,10 +20,17 @@ else:
 
 
 class Settings:
-    # Configuración Binance - CORREGIDO
+    # Configuración Binance - MANTENER compatibilidad
     MODE: str = os.getenv("MODE", "REAL").upper()
-    BINANCE_API_KEY: str = os.getenv("BINANCE_API_KEY", "")
-    BINANCE_API_SECRET: str = os.getenv("BINANCE_API_SECRET", "")
+
+    # Mantener ambos nombres para compatibilidad
+    API_KEY: str = os.getenv("BINANCE_API_KEY") or os.getenv("API_KEY", "")
+    API_SECRET: str = os.getenv("BINANCE_API_SECRET") or os.getenv("API_SECRET", "")
+
+    # También definir los nombres nuevos por si acaso
+    BINANCE_API_KEY: str = os.getenv("BINANCE_API_KEY") or os.getenv("API_KEY", "")
+    BINANCE_API_SECRET: str = os.getenv("BINANCE_API_SECRET") or os.getenv("API_SECRET", "")
+
     WS_URL: str = "wss://stream.binance.com:9443/ws"
 
     if MODE == "TESTNET":
@@ -31,7 +38,7 @@ class Settings:
     else:
         REST_URL = "https://api.binance.com"
 
-    # Configuración Base de Datos - CORREGIDO
+    # Configuración Base de Datos
     DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
     DB_PORT = os.getenv("POSTGRES_PORT", "5432")
     DB_NAME = os.getenv("POSTGRES_DB", "trading_bot")
@@ -44,8 +51,8 @@ class Settings:
 
     def validate_api_keys(self) -> None:
         """Validar que las credenciales de Binance estén presentes"""
-        if not self.BINANCE_API_KEY or not self.BINANCE_API_SECRET:
-            raise ValueError("⚠️ BINANCE_API_KEY y BINANCE_API_SECRET deben estar definidas")
+        if not self.API_KEY or not self.API_SECRET:
+            raise ValueError("⚠️ API_KEY y API_SECRET deben estar definidas")
 
 
 settings = Settings()
