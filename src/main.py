@@ -117,15 +117,20 @@ async def main():
     print(f"    Parámetros: {config['params']}")
     print("-------------------------------------------------")
 
-    # Crear instancia de la estrategia
+    # Cola opcional para confirmaciones entre TradeEngine -> Estrategia
+    confirmation_queue = asyncio.Queue()
+
+    # Crear instancia de la estrategia (pasando confirmation_queue)
     strategy = config["class"](
         signal_queue=signal_queue,
         bot_id=bot.id,
         run_db_id=run.id,
+        confirmation_queue=confirmation_queue,
         **config["params"]
     )
 
-    trade_engine = TradeEngine(signal_queue=signal_queue, bot_id=bot.id, run_db_id=run.id)
+    # Crear TradeEngine con la queue de confirmaciones
+    trade_engine = TradeEngine(signal_queue=signal_queue, bot_id=bot.id, run_db_id=run.id, confirmation_queue=confirmation_queue)
 
     try:
         await asyncio.gather(

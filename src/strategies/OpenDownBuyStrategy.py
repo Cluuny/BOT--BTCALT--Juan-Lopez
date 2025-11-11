@@ -31,6 +31,7 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
         base_capital: float = 10.0,
         symbol: str = "BTCUSDT",
         rest_client: BinanceRESTClient | None = None,
+        confirmation_queue: asyncio.Queue | None = None,
     ):
         self.signal_queue = signal_queue
         self.bot_id = bot_id
@@ -52,6 +53,8 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
         self.last_open_check_date = None
 
         self.rest_client = rest_client or BinanceRESTClient(testnet=False)
+        # Cola opcional para recibir confirmaciones de TradeEngine
+        self.confirmation_queue = confirmation_queue
 
     def _request_for_init(self, symbols: list[str]):
         try:
@@ -395,13 +398,44 @@ class BTC_Daily_Open_Strategy(BaseStrategy):
                 current_time=current_time,
             )
 
-            self.position_open = True
-            self.entry_price = price
-            self.entry_time = current_time
+            # Esperar confirmación de ejecución de la orden (opcional)
+            confirmed = False
+            if self.confirmation_queue is not None:
+                try:
+                    # esperar hasta 5 segundos por confirmación
+                    confirmation = await asyncio.wait_for(self.confirmation_queue.get(), timeout=5.0)
+                    if confirmation and confirmation.get('symbol') == self.symbol:
+                        if confirmation.get('status') == 'OPEN':
+                            confirmed = True
+                            logger.info(f"Confirmación recibida: Orden ABIERTA en {self.symbol}")
+                        else:
+                            logger.warning(f"Orden para {self.symbol} fue RECHAZADA por exchange: {confirmation.get('response')}")
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout esperando confirmación de orden (la orden puede estar en proceso)")
+                except Exception as e:
+                    logger.error(f"Error esperando confirmación: {e}")
 
-            logger.info(
-                f"Posicion abierta: {position_size_usdt:.2f} USDT @ {price:.2f}"
-            )
+            # Si quedó confirmada, marcar posición abierta usando datos reales si están disponibles
+            if confirmed:
+                # usar executed_qty y avg_price si la confirmación los incluye
+                executed_qty = confirmation.get('executed_qty') if confirmation else None
+                avg_price = confirmation.get('avg_price') if confirmation else None
+
+                # Preferir avg_price como entry_price si está disponible
+                if avg_price is not None and avg_price > 0:
+                    self.entry_price = float(avg_price)
+                else:
+                    # fallback al price de la señal
+                    self.entry_price = price
+
+                # Guardar cantidad base (si interesa para PnL absolut o para tamaños)
+                self.entry_qty = float(executed_qty) if executed_qty is not None else None
+                self.entry_time = current_time
+                self.position_open = True
+                logger.info(f"Posición confirmada ABIERTA: qty={self.entry_qty} @ price={self.entry_price}")
+            else:
+                # Si no hubo confirmación, no marcar posición (evita falso positivo en logs)
+                logger.info(f"No se marcó posición como ABIERTA para {self.symbol} (sin confirmación)")
 
     async def _check_exit_condition(
         self, price: float, change_pct: float, current_time: datetime

@@ -52,7 +52,7 @@ class TradeEngine:
     🔧 VERSIÓN CORREGIDA: Validación robusta de respuestas de Binance
     """
 
-    def __init__(self, signal_queue: asyncio.Queue, bot_id: int, run_db_id: int | None = None, rest_client: BinanceRESTClient | None = None):
+    def __init__(self, signal_queue: asyncio.Queue, bot_id: int, run_db_id: int | None = None, rest_client: BinanceRESTClient | None = None, confirmation_queue: asyncio.Queue | None = None):
         self.signal_queue = signal_queue
         self.bot_id = bot_id
         self.run_db_id = run_db_id
@@ -60,6 +60,8 @@ class TradeEngine:
         self.rest_client = rest_client or BinanceRESTClient(testnet=False)
         self.position_manager = PositionManager(rest_client=self.rest_client)
         self.order = None
+        # Cola opcional para notificar a la estrategia sobre confirmaciones de órdenes
+        self.confirmation_queue = confirmation_queue
 
     async def start(self):
         """Escucha continuamente la cola de señales VALIDADAS."""
@@ -386,16 +388,19 @@ class TradeEngine:
 
             # Ejecutar orden (usar async si disponible)
             if hasattr(self.rest_client, 'async_create_order'):
+                # usar quantity_str si está disponible para evitar notación científica
+                qty_param = self.order.get('quantity_str', str(self.order.get('quantity')))
                 response = await self.rest_client.async_create_order(
                     symbol=self.order['symbol'],
                     side=self.order['side'],
                     type_=self.order['type'],
-                    quantity=self.order['quantity'],
+                    quantity=qty_param,
                 )
             else:
                 loop = asyncio.get_running_loop()
+                qty_param = self.order.get('quantity_str', str(self.order.get('quantity')))
                 response = await loop.run_in_executor(None, self.rest_client.create_order,
-                                                      self.order['symbol'], self.order['side'], self.order['type'], self.order['quantity'])
+                                                      self.order['symbol'], self.order['side'], self.order['type'], qty_param)
 
             # Validar respuesta antes de persistir
             if response is None:
@@ -416,14 +421,72 @@ class TradeEngine:
                     "symbol": self.order['symbol'],
                     "side": self.order['side'],
                     "type": self.order['type'],
-                    "quantity": self.order['quantity']
+                    "quantity": self.order.get('quantity', self.order.get('quantity_str'))
                 },
                 response=response,
                 symbol=self.order['symbol'],
                 side=self.order['side'],
                 order_type=self.order['type'],
-                quantity=self.order['quantity'],
+                quantity=self.order.get('quantity', self.order.get('quantity_str')),
             )
+
+            # Si la orden fue exitosa, registrar la posición en PositionManager
+            if is_valid and response is not None:
+                try:
+                    # extraer executedQty y avg_price desde response
+                    executed_qty = None
+                    avg_price = None
+                    try:
+                        executed_qty = float(response.get('executedQty', 0) or 0)
+                    except Exception:
+                        executed_qty = None
+
+                    try:
+                        cumm_quote = float(response.get('cummulativeQuoteQty', 0) or 0)
+                        if executed_qty and executed_qty > 0 and cumm_quote > 0:
+                            avg_price = cumm_quote / executed_qty
+                    except Exception:
+                        avg_price = None
+
+                    # calcular expected_value de forma robusta usando avg_price o price de la orden
+                    expected_value = 0
+                    try:
+                        if avg_price is not None and executed_qty:
+                            expected_value = avg_price * executed_qty
+                        else:
+                            expected_value = (self.order.get('quantity') or 0) * float(self.order.get('price', 0) or 0)
+                    except Exception:
+                        expected_value = self.order.get('expected_value_usdt', 0)
+
+                    # Registrar posición abierta en el manager (extract info del response)
+                    try:
+                        self.position_manager.register_open_position(self.order['symbol'], response or self.order, expected_value, executed_qty=executed_qty, avg_price=avg_price)
+                    except Exception as e:
+                        logger.warning(f"⚠️ No se pudo registrar posición en PositionManager: {e}")
+
+                    # Notificar a la estrategia si hay confirmation_queue incluyendo qty y avg_price
+                    if self.confirmation_queue is not None:
+                        await self.confirmation_queue.put({
+                            'symbol': self.order['symbol'],
+                            'status': 'OPEN',
+                            'response': response,
+                            'expected_value_usdt': expected_value,
+                            'executed_qty': executed_qty,
+                            'avg_price': avg_price,
+                        })
+                except Exception as e:
+                    logger.warning(f"⚠️ Error manejando orden exitosa: {e}")
+            else:
+                # Orden rechazada -> notificar la estrategia de rechazo si corresponde
+                if self.confirmation_queue is not None:
+                    try:
+                        await self.confirmation_queue.put({
+                            'symbol': self.order['symbol'],
+                            'status': 'REJECTED',
+                            'response': response,
+                        })
+                    except Exception as e:
+                        logger.warning(f"⚠️ No se pudo notificar rechazo en confirmation_queue: {e}")
 
             # 🟠 Si la orden fue exitosa, intentar crear OCOs (TP/SL) según la señal
             if is_valid and response is not None:
@@ -463,16 +526,18 @@ class TradeEngine:
 
             # Ejecutar orden
             if hasattr(self.rest_client, 'async_create_order'):
+                qty_param = self.order.get('quantity_str', str(self.order.get('quantity')))
                 response = await self.rest_client.async_create_order(
                     symbol=self.order['symbol'],
                     side=self.order['side'],
                     type_=self.order['type'],
-                    quantity=self.order['quantity'],
+                    quantity=qty_param,
                 )
             else:
                 loop = asyncio.get_running_loop()
+                qty_param = self.order.get('quantity_str', str(self.order.get('quantity')))
                 response = await loop.run_in_executor(None, self.rest_client.create_order,
-                                                      self.order['symbol'], self.order['side'], self.order['type'], self.order['quantity'])
+                                                      self.order['symbol'], self.order['side'], self.order['type'], qty_param)
 
             # Validar respuesta
             if response is None:
@@ -491,13 +556,13 @@ class TradeEngine:
                     "symbol": self.order['symbol'],
                     "side": self.order['side'],
                     "type": self.order['type'],
-                    "quantity": self.order['quantity']
+                    "quantity": self.order.get('quantity', self.order.get('quantity_str'))
                 },
                 response=response,
                 symbol=self.order['symbol'],
                 side=self.order['side'],
                 order_type=self.order['type'],
-                quantity=self.order['quantity'],
+                quantity=self.order.get('quantity', self.order.get('quantity_str')),
             )
 
             # 🟠 Intentar crear OCO tras venta si corresponde

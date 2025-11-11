@@ -1,7 +1,7 @@
 from utils.logger import Logger
 import time
 from typing import Any, Dict, Optional
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 
 from strategies.BaseStrategy import BaseStrategy
 from data.rest_data_provider import BinanceRESTClient
@@ -50,6 +50,8 @@ class PositionManager:
         self.open_positions: Dict[str, Any] = {}
         self.rest_client = rest_client or BinanceRESTClient()
         self.symbols_info = {}  # Cache para información de símbolos
+        # mapping para guardar detalles ejecutados por exchange
+        self.executed_orders: Dict[str, Any] = {}
 
     def _get_symbol_info(self, symbol: str) -> Dict[str, Any]:
         """Obtiene y cachea la información del símbolo con sus filtros de trading."""
@@ -104,37 +106,51 @@ class PositionManager:
         logger.info(f"📋 Filtros disponibles: {[f.get('filterType') for f in filters]}")
         return 10.0
 
-    def _adjust_quantity_to_lot_size(self, symbol: str, quantity: float) -> float:
-        """Ajusta la cantidad según los filtros LOT_SIZE del símbolo."""
+    def _adjust_quantity_to_lot_size(self, symbol: str, quantity: float) -> Decimal:
+        """Ajusta la cantidad según los filtros LOT_SIZE del símbolo.
+        Devuelve un Decimal ya cuantizado al stepSize para evitar notación científica
+        y errores de formato al enviar al exchange.
+        """
         symbol_info = self._get_symbol_info(symbol)
         if not symbol_info:
             logger.warning(f"⚠️ No se pudo obtener info de {symbol}, usando cantidad sin ajustar")
-            return quantity
+            return Decimal(str(quantity))
 
         # Buscar filtro LOT_SIZE
         lot_size_filter = None
         for f in symbol_info.get('filters', []):
-            if f['filterType'] == 'LOT_SIZE':
+            if f.get('filterType') == 'LOT_SIZE':
                 lot_size_filter = f
                 break
 
         if not lot_size_filter:
             logger.warning(f"⚠️ LOT_SIZE no encontrado para {symbol}")
-            return quantity
+            return Decimal(str(quantity))
 
-        min_qty = float(lot_size_filter['minQty'])
-        max_qty = float(lot_size_filter['maxQty'])
-        step_size = float(lot_size_filter['stepSize'])
+        # Usar Decimal para precisión
+        min_qty = Decimal(str(lot_size_filter['minQty']))
+        max_qty = Decimal(str(lot_size_filter['maxQty']))
+        step_size = Decimal(str(lot_size_filter['stepSize']))
 
-        # Ajustar a step size
-        if step_size > 0:
-            quantity = float(Decimal(str(quantity)) - Decimal(str(quantity)) % Decimal(str(step_size)))
+        q = Decimal(str(quantity))
+
+        # Ajustar hacia abajo al múltiplo más cercano de step_size
+        if step_size > Decimal('0'):
+            try:
+                multiplier = (q // step_size)
+                q = multiplier * step_size
+            except Exception:
+                # Fallback básico
+                q = (q / step_size).to_integral_value(rounding=ROUND_DOWN) * step_size
 
         # Aplicar límites
-        quantity = max(min_qty, min(max_qty, quantity))
+        if q < min_qty:
+            q = min_qty
+        if q > max_qty:
+            q = max_qty
 
-        logger.info(f"🔢 Cantidad ajustada para {symbol}: {quantity} (step: {step_size})")
-        return quantity
+        logger.info(f"🔢 Cantidad ajustada para {symbol}: {q} (step: {step_size})")
+        return q
 
     def _get_available_USDT_balance(self) -> float:
         """
@@ -356,38 +372,63 @@ class PositionManager:
             # Calcular cantidad en moneda base
             quote_order_qty = quote_order_usdt / actual_symbol_price
 
-            # 4️⃣ Ajustar cantidad según LOT_SIZE
+            # 4️⃣ Ajustar cantidad según LOT_SIZE (ahora Decimal)
             adjusted_quantity = self._adjust_quantity_to_lot_size(symbol, quote_order_qty)
 
-            if adjusted_quantity <= 0:
+            if adjusted_quantity <= Decimal('0'):
                 logger.warning(f"🚫 Cantidad ajustada es 0 para {symbol}")
                 return None
 
-            # 🔧 NUEVO: Validación final de minNotional después de ajuste
-            final_order_value = adjusted_quantity * actual_symbol_price
-            if final_order_value < min_notional:
+            # 🔧 NUEVO: Validación final de minNotional después de ajuste (usar Decimal)
+            actual_price_dec = Decimal(str(actual_symbol_price))
+            final_order_value = (adjusted_quantity * actual_price_dec)
+            if final_order_value < Decimal(str(min_notional)):
                 logger.error(
-                    f"🚫 Valor final de orden ({final_order_value:.2f} USDT) < "
+                    f"🚫 Valor final de orden ({float(final_order_value):.2f} USDT) < "
                     f"minNotional ({min_notional:.2f} USDT) después de ajuste LOT_SIZE"
                 )
                 return None
+
+            # Formatear la cantidad como string sin notación científica respetando stepSize
+            # Recuperar stepSize para formateo
+            step_size_str = None
+            sym_info = self._get_symbol_info(symbol)
+            for f in sym_info.get('filters', []):
+                if f.get('filterType') == 'LOT_SIZE':
+                    step_size_str = str(f.get('stepSize'))
+                    break
+
+            if step_size_str is None:
+                # Fallback: usar 8 decimales
+                step_size = Decimal('0.00000001')
+            else:
+                step_size = Decimal(step_size_str)
+
+            try:
+                quantized = (adjusted_quantity // step_size) * step_size
+            except Exception:
+                quantized = adjusted_quantity
+
+            # format with fixed point representation to avoid exponent notation
+            quantity_str = format(quantized.normalize(), 'f')
 
             order_params = {
                 "symbol": symbol,
                 "side": side,
                 "type": "MARKET",
-                "quantity": adjusted_quantity,
+                # quantity compatible para código interno/tests
+                "quantity": float(quantized),
+                # quantity_str para el exchange (precisión y formato exacto)
+                "quantity_str": quantity_str,
             }
 
-            self.open_positions[symbol] = {
-                "order_params": order_params,
-                "timestamp": time.time(),
-                "quote_order_usdt": quote_order_usdt,
-                "expected_value_usdt": final_order_value,
-            }
+            # Nota: NO registrar la posición en open_positions aquí.
+            # El registro debe realizarse solo cuando el exchange confirme la ejecución
+            # para evitar que la estrategia marque una posición como ABIERTA cuando la orden falla.
+            # La TradeEngine es responsable de registrar posiciones tras respuesta positiva del exchange.
 
             logger.info(f"✅ Orden MARKET construida correctamente")
-            logger.info(f"📋 {symbol} {side} qty={adjusted_quantity} valor≈{final_order_value:.2f} USDT")
+            logger.info(f"📋 {symbol} {side} qty={quantity_str} valor≈{float(final_order_value):.2f} USDT")
 
             return order_params
 
@@ -397,136 +438,115 @@ class PositionManager:
             logger.error(f"Traceback: {traceback.format_exc()}")
             return None
 
-    async def create_oco_orders(self, entry_response: dict, signal: Dict[str, Any]):
-        """
-        🔧 CORREGIDO: Crea órdenes OCO (TP + SL) con validación robusta
+    def register_open_position(self, symbol: str, order_response: Dict[str, Any], expected_value_usdt: float, executed_qty: float | None = None, avg_price: float | None = None):
+        """Registrar posición como abierta tras confirmación del exchange.
+
+        Parámetros:
+            - symbol: símbolo (ej. 'BTCUSDT')
+            - order_response: respuesta del exchange (dict) o parametros de orden
+            - expected_value_usdt: valor estimado en USDT
         """
         try:
-            if not is_valid_binance_response(entry_response):
-                logger.warning("🚫 No se crean OCOs: respuesta de entrada inválida")
+            # Extraer qty (origQty / executedQty / quantity) si no fue provisto
+            qty = executed_qty
+            if qty is None and isinstance(order_response, dict):
+                try:
+                    qty = float(order_response.get('executedQty') or order_response.get('origQty') or order_response.get('quantity') or 0)
+                except Exception:
+                    qty = None
+
+            # Extraer avg_price si no fue provisto
+            ap = avg_price
+            if ap is None and isinstance(order_response, dict):
+                # intentar derivar avg_price de cummulativeQuoteQty / executedQty
+                try:
+                    cumm_quote = float(order_response.get('cummulativeQuoteQty', 0) or 0)
+                    exec_q = float(order_response.get('executedQty', qty or 0) or 0)
+                    if exec_q > 0 and cumm_quote > 0:
+                        ap = cumm_quote / exec_q
+                except Exception:
+                    ap = None
+
+            # Guardar en estructuras internas
+            self.open_positions[symbol] = {
+                'order_response': order_response,
+                'timestamp': time.time(),
+                'executed_qty': float(qty) if qty is not None else None,
+                'avg_price': float(ap) if ap is not None else None,
+                'expected_value_usdt': float(expected_value_usdt)
+            }
+            logger.info(f"📌 Posición registrada en PositionManager para {symbol}: qty={qty} avg_price={ap}")
+        except Exception as e:
+            logger.error(f"⚠️ Error registrando posición: {e}")
+
+    async def create_oco_orders(self, entry_response: dict, signal: Dict[str, Any]):
+        """Crear OCO (TP+SL) o TP/SL por separado usando el rest_client.
+
+        entry_response: respuesta de la orden de entrada (puede contener executedQty)
+        signal: dic con 'take_profit' y 'stop_loss'
+        """
+        try:
+            symbol = signal.get('symbol')
+            if symbol is None:
+                logger.warning("⚠️ create_oco_orders: signal sin symbol")
                 return
 
-            symbol = signal["symbol"].upper()
             tp = signal.get('take_profit')
             sl = signal.get('stop_loss')
 
             if tp is None and sl is None:
-                logger.debug("ℹ️ Señal no define TP ni SL; no se crean OCOs")
+                logger.debug("ℹ️ Señal sin TP ni SL; no se crearán OCOs")
                 return
 
-            # Determinar cantidad ejecutada
+            # Determinar quantity ejecutada
             executed_qty = None
             try:
-                executed_qty = float(entry_response.get("executedQty", 0) or 0)
+                executed_qty = float(entry_response.get('executedQty', 0) or 0)
             except Exception:
                 executed_qty = None
 
-            if not executed_qty or executed_qty <= 0:
-                op = self.open_positions.get(symbol)
-                if op:
-                    executed_qty = op.get("order_params", {}).get("quantity")
+            # si no viene, intentar desde open_positions (registered executed_qty)
+            if (not executed_qty or executed_qty <= 0) and symbol in self.open_positions:
+                executed_qty = self.open_positions[symbol].get('executed_qty')
 
             if not executed_qty or executed_qty <= 0:
-                logger.warning("⚠️ No se pudo determinar cantidad ejecutada para crear OCO")
+                logger.warning(f"⚠️ No se pudo determinar cantidad ejecutada para crear OCO en {symbol}")
                 return
 
-            # Determinar side (invertir el lado de la entrada)
-            side = "SELL" if signal.get("type", "BUY").upper() == "BUY" else "BUY"
+            side = 'SELL' if signal.get('type', 'BUY').upper() == 'BUY' else 'BUY'
 
-            tp_price = float(tp) if tp is not None else None
-            sl_price = float(sl) if sl is not None else None
-
-            # 🔧 CORREGIDO: Crear Stop-Limit con stopPrice
-            if tp_price is None and sl_price is not None:
-                logger.info("🔧 Creando Stop-Limit (sin TP) como protección")
-                # stopLimitPrice debe ser peor que stopPrice para garantizar ejecución
-                sl_limit = sl_price * (0.995 if side == "SELL" else 1.005)
-
-                # usar versión async si está disponible
-                if hasattr(self.rest_client, 'async_create_order'):
-                    resp = await self.rest_client.async_create_order(
-                        symbol=symbol,
-                        side=side,
-                        type_="STOP_LOSS_LIMIT",
-                        quantity=executed_qty,
-                        price=sl_limit,
-                        time_in_force="GTC",
-                        stop_price=sl_price
-                    )
-                else:
-                    loop = asyncio.get_running_loop()
-                    resp = await loop.run_in_executor(None, self.rest_client.create_order,
-                                                      symbol, side, "STOP_LOSS_LIMIT", executed_qty)
-
-                if is_valid_binance_response(resp):
-                    logger.info("✅ Stop-Limit creado")
-                    self.open_positions.setdefault(symbol, {})["stop_limit"] = resp
-                else:
-                    logger.error(f"❌ Falló creación Stop-Limit: {resp}")
-                return
-
-            # Si solo TP existe, crear limit TP
-            if tp_price is not None and sl_price is None:
-                logger.info("🔧 Creando TAKE-PROFIT LIMIT (sin SL)")
-                if hasattr(self.rest_client, 'async_create_order'):
-                    resp = await self.rest_client.async_create_order(
-                        symbol=symbol,
-                        side=side,
-                        type_="LIMIT",
-                        quantity=executed_qty,
-                        price=tp_price,
-                        time_in_force="GTC",
-                    )
-                else:
-                    loop = asyncio.get_running_loop()
-                    resp = await loop.run_in_executor(None, self.rest_client.create_order,
-                                                      symbol, side, "LIMIT", executed_qty, tp_price)
-
-                if is_valid_binance_response(resp):
-                    logger.info("✅ Take-Profit creado")
-                    self.open_positions.setdefault(symbol, {})["take_profit"] = resp
-                else:
-                    logger.error(f"❌ Falló creación Take-Profit: {resp}")
-                return
-
-            # Si ambos existen, crear OCO
-            logger.info("🔧 Intentando crear OCO (TP + SL)")
-            stop_limit_price = sl_price * (0.999 if side == "SELL" else 1.001)
-
-            if hasattr(self.rest_client, 'async_create_oco_order'):
-                oco_resp = await self.rest_client.async_create_oco_order(
-                    symbol=symbol,
-                    side=side,
-                    quantity=executed_qty,
-                    take_profit_price=tp_price,
-                    stop_price=sl_price,
-                    stop_limit_price=stop_limit_price,
-                    stop_limit_time_in_force="GTC",
-                )
-            else:
+            # Preferir create_oco_order si está disponible
+            if hasattr(self.rest_client, 'create_oco_order'):
                 loop = asyncio.get_running_loop()
-                oco_resp = await loop.run_in_executor(None, self.rest_client.create_oco_order,
-                                                      symbol, side, executed_qty, tp_price, sl_price, stop_limit_price)
+                resp = await loop.run_in_executor(None, self.rest_client.create_oco_order,
+                                                  symbol, side, executed_qty, float(tp) if tp is not None else None, float(sl) if sl is not None else None, None)
+                # guardar fallback
+                if isinstance(resp, dict):
+                    self.open_positions.setdefault(symbol, {})['oco'] = resp
+                    logger.info(f"✅ OCO creada para {symbol}: {resp}")
+                else:
+                    logger.warning(f"⚠️ Respuesta inesperada create_oco_order para {symbol}: {resp}")
+                return
 
-            if is_valid_binance_response(oco_resp) or (
-                isinstance(oco_resp, dict) and ("tp" in oco_resp or "sl" in oco_resp)
-            ):
-                logger.info("✅ OCO (o fallback) creada correctamente")
-                self.open_positions.setdefault(symbol, {})["oco"] = oco_resp
-            else:
-                logger.error(f"❌ Falló creación OCO: {oco_resp}")
+            # Fallback: crear TP y SL por separado
+            logger.info("ℹ️ create_oco_orders: create_oco_order no disponible, creando TP/SL por separado")
+            if tp is not None:
+                loop = asyncio.get_running_loop()
+                tp_resp = await loop.run_in_executor(None, self.rest_client.create_order,
+                                                      symbol, side, 'LIMIT', executed_qty, float(tp))
+                if tp_resp:
+                    self.open_positions.setdefault(symbol, {})['take_profit'] = tp_resp
+
+            if sl is not None:
+                # stop_limit_price: ajustar pequeño margen
+                sl_limit = float(sl) * 1.0
+                loop = asyncio.get_running_loop()
+                sl_resp = await loop.run_in_executor(None, self.rest_client.create_order,
+                                                      symbol, side, 'STOP_LOSS_LIMIT', executed_qty, sl_limit)
+                if sl_resp:
+                    self.open_positions.setdefault(symbol, {})['stop_limit'] = sl_resp
 
         except Exception as e:
-            logger.error(f"⚠️ Error creando OCO: {e}")
+            logger.error(f"⚠️ Error creando OCO en PositionManager: {e}")
             import traceback
             logger.error(traceback.format_exc())
-
-    def get_position_summary(self) -> Dict[str, Any]:
-        """
-        🔧 NUEVO: Obtiene resumen de posiciones abiertas
-        """
-        return {
-            "total_positions": len(self.open_positions),
-            "symbols": list(self.open_positions.keys()),
-            "positions": self.open_positions
-        }
