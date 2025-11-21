@@ -12,6 +12,9 @@ if SRC not in sys.path:
 import pytest
 from pathlib import Path
 
+# Configurar pytest-asyncio
+pytest_plugins = ('pytest_asyncio',)
+
 # --- Fixture DB de prueba (SQLite in-memory) ---
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker

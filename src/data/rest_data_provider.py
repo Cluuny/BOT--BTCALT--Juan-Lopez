@@ -18,13 +18,20 @@ class BinanceRESTClient:
     Maneja autenticación y operaciones de trading/consulta.
     """
 
-    def __init__(self, testnet: bool = True):
+    def __init__(self):
         logger.info("🔗 Conectando al cliente REST de Binance...")
         # Validar claves antes de instanciar el cliente (permite importar settings sin crash)
         settings.settings.validate_api_keys()
 
+        if settings.settings.MODE == "TESNET":
+            is_tesnet = True
+        elif settings.settings.MODE == "REAL":
+            is_tesnet = False
+        else:
+            raise Exception("Invalid MODE in settings")
+
         self.client = Client(
-            settings.settings.API_KEY, settings.settings.API_SECRET, testnet=testnet
+            settings.settings.API_KEY, settings.settings.API_SECRET, testnet=is_tesnet
         )
 
         self._sync_time_with_server()
@@ -101,6 +108,10 @@ class BinanceRESTClient:
     def get_server_time(self) -> Dict[str, Any]:
         """Obtiene la hora del servidor."""
         return self.client.get_server_time()
+
+    def get_price_change_percent(self, symbol: str) -> float:
+        """Obtiene el porcentaje de cambio de precio actual."""
+        return float(self.client.get_ticker(symbol=symbol.upper())["priceChangePercent"])
 
     def get_exchange_info(self) -> Dict[str, Any]:
         """Obtiene información general del exchange."""

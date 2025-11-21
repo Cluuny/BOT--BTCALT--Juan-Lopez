@@ -3,20 +3,23 @@ from config.settings import settings
 from persistence.db_connection import db
 from persistence.test_db import run_all_db_tests
 from persistence.test_repos import run_repository_tests
-from strategies import BBANDS_RSI_MeanReversionStrategy
-from strategies.btc_rsi import BTC_RSI_Strategy
-from strategies.OpenDownBuyStrategy import BTC_Daily_Open_Strategy
 from engine.trade_engine import TradeEngine
 from persistence.repositories.bot_config_repository import BotConfigRepository
 from persistence.repositories.bot_run_repository import BotRunRepository
 
+# Importar SOLO estrategias migradas al framework EnhancedBaseStrategy
+from strategies.examples.simple_mean_reversion import SimpleMeanReversionStrategy
+from strategies.live_strategies.DownALTBuyer import DownALTBuyer
+from strategies.live_strategies.bbands_rsi_mean_reversion import BBANDS_RSI_MeanReversionStrategy
+from strategies.live_strategies.btc_rsi import BTC_RSI_Strategy
+from strategies.live_strategies.OpenDownBuyStrategy import OpenDownBuyStrategy
+
 settings = settings
 
-# 🔧 CONFIGURACIÓN FLEXIBLE DE ESTRATEGIAS
 STRATEGY_CONFIGS = {
     "bbands_rsi": {
         "class": BBANDS_RSI_MeanReversionStrategy,
-        "name": "BBANDS RSI Mean Reversion",
+        "name": "BBANDS RSI Mean Reversion (Framework)",
         "symbols": ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"],
         "params": {
             "bb_period": 20,
@@ -33,32 +36,55 @@ STRATEGY_CONFIGS = {
     },
     "btc_rsi": {
         "class": BTC_RSI_Strategy,
-        "name": "BTC RSI Strategy",
+        "name": "BTC RSI Strategy (Framework)",
         "symbols": ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"],
         "params": {
             "rsi_period": 14,
             "overbought": 70,
-            "oversold": 30
+            "oversold": 30,
+            "timeframe": "1m"
         }
     },
-    "btc_daily": {
-        "class": BTC_Daily_Open_Strategy,
-        "name": "BTC Daily Open Strategy",
-        "symbols": ["BTCUSDT"],  # Solo BTC para esta estrategia
+    "open_down_buy": {
+        "class": OpenDownBuyStrategy,
+        "name": "Open Down Buy Strategy (Framework)",
+        "symbols": ["BTCUSDT"],
         "params": {
             "entry_threshold": -1.0,
             "exit_threshold": 2.0,
             "position_size_percent": 100.0,
             "base_capital": 10.0,
-            "symbol": "BTCUSDT"
+            "timeframe": "1m"
+        }
+    },
+    "btcdown_altbuy":{
+        "class": DownALTBuyer,
+        "name": "BTC Down ALT Buy (Framework)",
+        "symbols": ["BTCUSDT", "ETHUSDT", "XRPUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT"],
+        "params": {
+            "entry_threshold": -1.0,
+            "exit_threshold": 2.0,
+            "position_size_percent": 100.0,
+            "base_capital": 10.0,
+            "timeframe": "1m"
+        }
+    },
+    "simple_mean_reversion": {
+        "class": SimpleMeanReversionStrategy,
+        "name": "Simple Mean Reversion Strategy (Framework)",
+        "symbols": ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"],
+        "params": {
+            "period": 20,
+            "std": 2.0,
+            "max_holding_hours": 48,
+            "timeframe": "1m"
         }
     }
 }
 
 
 def print_strategy_options():
-    """Muestra las estrategias disponibles"""
-    print("\n🎯 ESTRATEGIAS DISPONIBLES:")
+    print("\nESTRATEGIAS DISPONIBLES:")
     for key, config in STRATEGY_CONFIGS.items():
         print(f"   🔹 {key}: {config['name']}")
         print(f"      Símbolos: {config['symbols']}")
@@ -70,10 +96,10 @@ async def main():
     # Asegurar tablas
     db.create_tables()
 
-    # Crear sesión y asegurar BotConfig -  Persistir en BD
+    # Crear sesión y asegurar BotConfig - Persistir en BD
     session = db.get_session()
     bot_repo = BotConfigRepository(session)
-    bot = bot_repo.create_if_not_exists(name="Bot", exchange="BINANCE", mode="REAL")
+    bot = bot_repo.create_if_not_exists(name="Bot", exchange="BINANCE", mode=settings.MODE)
 
     # Iniciar un BotRun
     run_repo = BotRunRepository(session)
@@ -90,14 +116,14 @@ async def main():
 
     run_all_db_tests()
     run_repository_tests()
-    print("✅ Todas las pruebas completadas.")
+    print("Todas las pruebas completadas.")
     print("-------------------------------------------------")
 
     # SELECCIÓN DE ESTRATEGIA
     print_strategy_options()
 
-    # Estrategia por defecto - Pruebas
-    selected_strategy = "btc_daily"
+    # Estrategia por defecto - Todas las estrategias ahora usan el framework EnhancedBaseStrategy
+    selected_strategy = "open_down_buy"
 
     # Para selección manual por consola
     # selected_strategy = input("Ingresa el nombre de la estrategia a usar: ").strip().lower()
@@ -107,9 +133,10 @@ async def main():
         print(f"Estrategia '{selected_strategy}' no encontrada.")
         print(f"Estrategias disponibles: {available_strategies}")
         # Usar estrategia por defecto
-        selected_strategy = "btc_daily"
+        selected_strategy = "open_down_buy"
         print(f"Usando estrategia por defecto: {selected_strategy}")
 
+    # config = Estrategia Seleccionada
     config = STRATEGY_CONFIGS[selected_strategy]
 
     print(f"\nINICIANDO ESTRATEGIA: {config['name']}")
@@ -120,21 +147,28 @@ async def main():
     # Cola opcional para confirmaciones entre TradeEngine -> Estrategia
     confirmation_queue = asyncio.Queue()
 
-    # Crear instancia de la estrategia (pasando confirmation_queue)
-    strategy = config["class"](
-        signal_queue=signal_queue,
-        bot_id=bot.id,
-        run_db_id=run.id,
-        confirmation_queue=confirmation_queue,
-        **config["params"]
-    )
+    # Crear instancia de la estrategia
+    # Todas las estrategias ahora usan EnhancedBaseStrategy, que requiere 'symbols'
+    strategy_kwargs = {
+        "signal_queue": signal_queue,
+        "bot_id": bot.id,
+        "symbols": config["symbols"],
+        "run_db_id": run.id,
+        "confirmation_queue": confirmation_queue,
+    }
+
+    # Agregar parámetros de configuración a la estrategia seleccionada
+    strategy_kwargs.update(config["params"])
+
+    # Instanciar estrategia
+    strategy = config["class"](**strategy_kwargs)
 
     # Crear TradeEngine con la queue de confirmaciones
     trade_engine = TradeEngine(signal_queue=signal_queue, bot_id=bot.id, run_db_id=run.id, confirmation_queue=confirmation_queue)
 
     try:
         await asyncio.gather(
-            strategy.start(symbols=config["symbols"]),
+            strategy.start(),
             trade_engine.start()
         )
     except KeyboardInterrupt:

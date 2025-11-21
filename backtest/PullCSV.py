@@ -9,7 +9,7 @@ from binance.client import Client
 from binance.exceptions import BinanceAPIException
 
 
-def descargar_btcusd_m1_7años(salida_csv: str = "btcusd_m1_7years.csv") -> str:
+def pull_data(symbol: str = "BTCUSDT", years: int = 7, timeframe: str = "1m", csv_exit: str = "data.csv") -> str:
     """
     Descarga velas de 1 minuto de BTC/USDT (proxy de BTCUSD) de los últimos 7 años usando Binance.
     - Guarda CSV con columnas: Date (UTC ISO8601), open, high, low, close, volume
@@ -18,30 +18,27 @@ def descargar_btcusd_m1_7años(salida_csv: str = "btcusd_m1_7years.csv") -> str:
 
     Retorna la ruta del CSV generado (en la carpeta actual).
     """
-    print("🚀 Descargando BTCUSD (BTCUSDT en Binance) — timeframe 1m — últimos 7 años")
+    print(f"Descargando {symbol} en Binance — timeframe {timeframe} — últimos {years} años")
 
     now = datetime.now(timezone.utc)
-    start = now - timedelta(days=7 * 365)
+    start = now - timedelta(days=years * 365)
 
     # Binance usa milisegundos desde epoch UTC
     start_ms = int(start.timestamp() * 1000)
     end_ms = int(now.timestamp() * 1000)
 
-    client = Client()  # sin API key: endpoint público para klines históricos
-
-    interval = Client.KLINE_INTERVAL_1MINUTE
-    limit = 1000  # máximo por llamada
+    client = Client()
+    limit = 1000
 
     all_rows = []
     curr = start_ms
     calls = 0
 
-    # Archivo temporal para reanudación simple (opcional)
-    tmp_csv = salida_csv + ".part"
+    tmp_csv = csv_exit + ".part"
 
     while curr < end_ms:
         try:
-            kl = client.get_klines(symbol="BTCUSDT", interval=interval, limit=limit, startTime=curr, endTime=end_ms)
+            kl = client.get_klines(symbol=symbol, interval=timeframe, limit=limit, startTime=curr, endTime=end_ms)
         except BinanceAPIException as e:
             print(f"⚠️ BinanceAPIException: {e.status_code} {e.message}. Reintentando en 2s...")
             time.sleep(2)
@@ -99,12 +96,12 @@ def descargar_btcusd_m1_7años(salida_csv: str = "btcusd_m1_7years.csv") -> str:
     df = df.sort_values("Date").reset_index(drop=True)
 
     # Guardar CSV final en carpeta backtest si se ejecuta desde raíz del proyecto
-    out_path = salida_csv
+    out_path = csv_exit
     # Si este script se ejecuta desde backtest/, mantener relativo
     try:
         # Preferir guardar en la misma carpeta del script
         base_dir = os.path.dirname(__file__)
-        out_path = os.path.join(base_dir, salida_csv)
+        out_path = os.path.join(base_dir, csv_exit)
     except Exception:
         pass
 
@@ -117,11 +114,10 @@ def descargar_btcusd_m1_7años(salida_csv: str = "btcusd_m1_7years.csv") -> str:
     except Exception:
         pass
 
-    print(f"✅ Guardado: {out_path}")
-    print(f"   Registros: {len(df):,} | Rango: {df['Date'].iloc[0]} → {df['Date'].iloc[-1]}")
+    print(f"Guardado: {out_path}")
+    print(f"Registros: {len(df):,} | Rango: {df['Date'].iloc[0]} → {df['Date'].iloc[-1]}")
     return out_path
 
 
 if __name__ == "__main__":
-    # Ejecutar descarga específica solicitada
-    descargar_btcusd_m1_7años()
+    pull_data(symbol="BTCUSDT", years=10, timeframe="1m", csv_exit="btcusdt_1m_7y.csv")

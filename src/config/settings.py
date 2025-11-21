@@ -21,7 +21,7 @@ else:
 
 class Settings:
     # Configuración Binance - MANTENER compatibilidad
-    MODE: str = os.getenv("MODE", "REAL").upper()
+    MODE: str = os.getenv("MODE", "TESNET").upper()
 
     # Mantener ambos nombres para compatibilidad
     API_KEY: str = os.getenv("BINANCE_API_KEY") or os.getenv("API_KEY", "")

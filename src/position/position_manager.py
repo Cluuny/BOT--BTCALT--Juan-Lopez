@@ -1,9 +1,9 @@
 from utils.logger import Logger
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 from decimal import Decimal, ROUND_DOWN
 
-from strategies.BaseStrategy import BaseStrategy
+from strategies.core.enhanced_base_strategy import EnhancedBaseStrategy, RiskParameters
 from data.rest_data_provider import BinanceRESTClient
 import asyncio
 
@@ -173,7 +173,7 @@ class PositionManager:
             return 0.0
 
     async def can_open_position(
-            self, symbol: str, risk_params: BaseStrategy.RiskParameters
+            self, symbol: str, risk_params: Union[RiskParameters, Dict[str, Any]]
     ) -> bool:
         """Verifica si se puede abrir una nueva posición según los parámetros de riesgo."""
         # Extraer max_open_positions de dict u objeto

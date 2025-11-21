@@ -5,7 +5,6 @@ import time
 from utils.logger import Logger
 from position.position_manager import PositionManager
 
-from strategies.BaseStrategy import BaseStrategy
 from contracts.signal_contract import ValidatedSignal, SignalContract
 from data.rest_data_provider import BinanceRESTClient
 from persistence.db_connection import db
@@ -57,7 +56,7 @@ class TradeEngine:
         self.bot_id = bot_id
         self.run_db_id = run_db_id
         # permitir inyección de rest_client para tests
-        self.rest_client = rest_client or BinanceRESTClient(testnet=False)
+        self.rest_client = rest_client or BinanceRESTClient()
         self.position_manager = PositionManager(rest_client=self.rest_client)
         self.order = None
         # Cola opcional para notificar a la estrategia sobre confirmaciones de órdenes
@@ -377,8 +376,9 @@ class TradeEngine:
                 f"Estrategia: {strategy_name} | Razón: {reason}"
             )
 
-            # build_market_order es ahora async
-            self.order = await self.position_manager.build_market_order(signal=signal)
+            # Usar la versión async directamente
+            # TypedDict se puede usar como dict en runtime
+            self.order = await self.position_manager._build_market_order_async(signal=signal)  # type: ignore[arg-type]
 
             if self.order is None:
                 logger.warning("⚠️ No se pudo construir orden de compra")
@@ -491,7 +491,7 @@ class TradeEngine:
             # 🟠 Si la orden fue exitosa, intentar crear OCOs (TP/SL) según la señal
             if is_valid and response is not None:
                 try:
-                    await self.position_manager.create_oco_orders(response, signal)
+                    await self.position_manager.create_oco_orders(response, signal)  # type: ignore[arg-type]
                 except Exception as e:
                     logger.warning(f"⚠️ No se pudo crear OCO tras entrada: {e}")
 
@@ -516,7 +516,9 @@ class TradeEngine:
                 f"Estrategia: {strategy_name} | Razón: {reason}"
             )
 
-            self.order = await self.position_manager.build_market_order(signal=signal)
+            # Usar la versión async directamente
+            # TypedDict se puede usar como dict en runtime
+            self.order = await self.position_manager._build_market_order_async(signal=signal)  # type: ignore[arg-type]
 
             if self.order is None:
                 logger.warning("⚠️ No se pudo construir orden de venta")
@@ -568,7 +570,7 @@ class TradeEngine:
             # 🟠 Intentar crear OCO tras venta si corresponde
             if is_valid and response is not None:
                 try:
-                    await self.position_manager.create_oco_orders(response, signal)
+                    await self.position_manager.create_oco_orders(response, signal)  # type: ignore[arg-type]
                 except Exception as e:
                     logger.warning(f"⚠️ No se pudo crear OCO tras entrada: {e}")
 
